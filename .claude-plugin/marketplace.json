@@ -1,0 +1,14 @@
+{
+  "name": "aaronstatic",
+  "owner": {
+    "name": "Aaron Static"
+  },
+  "description": "Beast Mode — battle-tested Claude Code workflow system.",
+  "plugins": [
+    {
+      "name": "beast-mode",
+      "source": ".",
+      "description": "Battle-tested Claude Code workflow system: skills, feature docs, agents, Discord bridge, web dashboard, desktop MCP."
+    }
+  ]
+}

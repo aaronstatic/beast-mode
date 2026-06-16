@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "beast-mode-discord": {
+      "command": "bun",
+      "args": ["run", "channel/server.ts"],
+      "env": {}
+    }
+  }
+}

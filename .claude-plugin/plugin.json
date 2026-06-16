@@ -1,0 +1,31 @@
+{
+  "name": "beast-mode",
+  "version": "4.0.0",
+  "description": "Battle-tested Claude Code workflow system: skills, dev docs, agents, Discord bridge, web dashboard, and desktop MCP.",
+  "author": {
+    "name": "Aaron Static"
+  },
+  "license": "MIT",
+  "keywords": [
+    "workflow",
+    "productivity",
+    "skills",
+    "dev-docs",
+    "agents",
+    "automation",
+    "best-practices",
+    "discord",
+    "remote",
+    "epics"
+  ],
+  "commands": "./commands",
+  "discordBridge": {
+    "bot": "./bot",
+    "channel": "./channel",
+    "setup": "./commands/setup-discord-bridge.md",
+    "docs": "./docs/discord-bridge-setup.md"
+  },
+  "desktopMcpServer": {
+    "server": "./bot/mcp-server.ts"
+  }
+}
