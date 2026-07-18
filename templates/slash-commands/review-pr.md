@@ -1,5 +1,5 @@
 ---
-description: Independent review of PR changes — either an open GitHub PR or local uncommitted work about to become one. Usage: /review-pr [PR-number]
+description: "Independent review of PR changes - either an open GitHub PR or local uncommitted work about to become one. Usage: /review-pr [PR-number]"
 ---
 
 You have been asked to perform an **independent review** of a pull request, either one already on GitHub or a set of local changes about to be submitted.

@@ -53,6 +53,14 @@ export const commands = [
         )
     )
     .addSubcommand((sub) =>
+      sub
+        .setName("autorun")
+        .setDescription("Autonomously run a feature to completion (plan, build, review, docs)")
+        .addStringOption((opt) =>
+          opt.setName("feature").setDescription("Feature name (or epic/feature; omit for current feature)").setRequired(false)
+        )
+    )
+    .addSubcommand((sub) =>
       sub.setName("suggest").setDescription("Suggest next feature")
     )
     .addSubcommand((sub) =>

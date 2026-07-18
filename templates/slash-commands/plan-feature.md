@@ -1,5 +1,5 @@
 ---
-description: Plan a new feature by gathering requirements and creating an implementation plan. Usage: /plan-feature <feature-name> [initial requirements]
+description: "Plan a new feature by gathering requirements and creating an implementation plan. Usage: /plan-feature <feature-name> [initial requirements]"
 ---
 
 You have been asked to plan a new feature with implementation documentation.

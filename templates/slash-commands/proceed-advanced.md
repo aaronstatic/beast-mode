@@ -1,5 +1,5 @@
 ---
-description: Proceed on the current feature using ADVANCED (opus, max-effort) agents, one phase only. Usage: /proceed-advanced
+description: "Proceed on the current feature using ADVANCED (opus, max-effort) agents, one phase only. Usage: /proceed-advanced"
 ---
 
 You have been asked to continue work on the current feature using the **advanced agents** — for a **single phase only**. This is the heavyweight sibling of `/proceed`: use it when the next phase is a major refactor, touches many integration points, or is otherwise high-risk and benefits from opus running at maximum effort.

@@ -1,5 +1,5 @@
 ---
-description: Document reusable skills and patterns from a completed feature. Usage: /document-feature [feature-name]
+description: "Document reusable skills and patterns from a completed feature. Usage: /document-feature [feature-name]"
 ---
 
 # /document-feature - Extract Reusable Knowledge from Features

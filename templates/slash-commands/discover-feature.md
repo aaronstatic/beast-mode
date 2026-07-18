@@ -1,5 +1,5 @@
 ---
-description: Discover and document an existing feature in the codebase, creating implementation docs for legacy code. Usage: /discover-feature <feature-name> [description]
+description: "Discover and document an existing feature in the codebase, creating implementation docs for legacy code. Usage: /discover-feature <feature-name> [description]"
 ---
 
 You have been asked to discover and document an existing feature in the codebase.

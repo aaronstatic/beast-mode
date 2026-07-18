@@ -1,5 +1,5 @@
 ---
-description: Evaluate a feature against its acceptance criteria using a fresh evaluator agent. Usage: /evaluate-feature [feature-name]
+description: "Evaluate a feature against its acceptance criteria using a fresh evaluator agent. Usage: /evaluate-feature [feature-name]"
 ---
 
 You have been asked to evaluate a completed feature against its acceptance criteria.

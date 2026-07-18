@@ -1,5 +1,5 @@
 ---
-description: Connect the current project to the Beast Mode Discord Bridge. Requires the bot to already be running. Usage: /connect-discord
+description: "Connect the current project to the Beast Mode Discord Bridge. Requires the bot to already be running. Usage: /connect-discord"
 ---
 
 You are connecting the **current project** to an existing Beast Mode Discord Bridge bot.

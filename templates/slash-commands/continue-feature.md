@@ -1,5 +1,5 @@
 ---
-description: Resume work on an existing feature. Usage: /continue-feature [feature-name]
+description: "Resume work on an existing feature. Usage: /continue-feature [feature-name]"
 ---
 
 You have been asked to continue work on an existing feature.

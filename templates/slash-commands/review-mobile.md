@@ -1,5 +1,5 @@
 ---
-description: Run a comprehensive, stack-aware mobile app quality review (auto-detects React Native/Expo, Flutter, native iOS, native Android, Capacitor). Usage: /review-mobile [scope]
+description: "Run a comprehensive, stack-aware mobile app quality review (auto-detects React Native/Expo, Flutter, native iOS, native Android, Capacitor). Usage: /review-mobile [scope]"
 ---
 
 You have been asked to run a comprehensive, **stack-aware** mobile app quality review.

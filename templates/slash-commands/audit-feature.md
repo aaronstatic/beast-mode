@@ -1,5 +1,5 @@
 ---
-description: Audit a feature's architecture, integration, and DX from a meta standpoint. Usage: /audit-feature [feature-name]
+description: "Audit a feature's architecture, integration, and DX from a meta standpoint. Usage: /audit-feature [feature-name]"
 ---
 
 You have been asked to audit an existing feature's architecture and integration quality.

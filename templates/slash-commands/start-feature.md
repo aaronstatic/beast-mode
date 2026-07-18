@@ -1,5 +1,5 @@
 ---
-description: Start a new feature with dev docs structure. Usage: /start-feature [feature-name]
+description: "Start a new feature with dev docs structure. Usage: /start-feature [feature-name]"
 ---
 
 You have been asked to start a new feature with dev docs structure.

@@ -39,36 +39,31 @@ Place agents in `.claude/agents/` (project-specific, highest priority)
 | `description` | **Yes** | When to use this agent |
 | `tools` | No | Limit tools available (improves focus) |
 | `model` | No | Override model (sonnet/opus/haiku/inherit) |
-| `effort` | No | Reasoning effort for this agent: `low`, `medium`, `high`, `xhigh`, `max`, or `ultracode` (opus only). Set by Beast Mode setup/upgrade per the policy below. |
+| `effort` | No | Reasoning effort for this agent: `low`, `medium`, `high`, `xhigh`, or `max`. Set by Beast Mode setup/upgrade per the policy below. |
 | `color` | No | Status line color. Use: **white** for architects/planners, **blue** for frontend/CLI devs, **green** for backend devs, **red** for reviewers/validators, other colors (yellow, purple, cyan) for remaining agents |
 
 ---
 
 ## Model & Effort Policy
 
-Beast Mode tunes `model` and `effort` by the agent's role. The user chooses a **maximum effort level** at `/install-beast-mode` / `/upgrade-beast-mode`; everything else is derived from it.
+Beast Mode tunes `model` and `effort` by the agent's role. The user picks one of **three effort presets** at `/install-beast-mode` / `/upgrade-beast-mode`; every agent's effort derives from it. The preset sets **MAX** — how hard the high-leverage `opus` agents think. Standard dev agents always run on `sonnet` at `high`, because the architectural thinking already lives in the plan.
 
 | Agent role | Model | Effort | Rationale |
 |------------|-------|--------|-----------|
-| **solution-architect** | `opus` | the chosen **MAX** | Architecture is the highest-leverage thinking — do it at full strength so the plan carries the load |
-| **Standard dev agents** (`frontend-dev`, `backend-dev`, `ml-dev`, `dev`, …) | `sonnet` | **2 steps below MAX** (default; user-adjustable) | The hard thinking already lives in the plan; implementation can run leaner and cheaper |
-| **Advanced dev agents** (`frontend-dev-advanced`, …) | `opus` | the chosen **MAX** | For major refactors / integration-heavy / high-risk phases — invoked by `/proceed-advanced` or by `/proceed` after asking the user |
-| **Review / evaluation agents** (code review, PR review, `/evaluate-feature`) | `opus` | the chosen **MAX** | A weak reviewer rubber-stamps weak work — reviewing always justifies the strongest setting |
+| **solution-architect** | `opus` | the preset's **MAX** | Architecture is the highest-leverage thinking — do it at full strength so the plan carries the load |
+| **Standard dev agents** (`frontend-dev`, `backend-dev`, `ml-dev`, `dev`, …) | `sonnet` | `high` (fixed) | The hard thinking already lives in the plan; implementation runs leaner and cheaper |
+| **Advanced dev agents** (`frontend-dev-advanced`, …) | `opus` | the preset's **MAX** | For major refactors / integration-heavy / high-risk phases — invoked by `/proceed-advanced` or by `/proceed` after asking the user |
+| **Review / evaluation agents** (code review, PR review, `/evaluate-feature`) | `opus` | the preset's **MAX** | A weak reviewer rubber-stamps weak work — reviewing always justifies the strongest setting |
 
-**The effort ladder** (low → high): `low` → `medium` → `high` → `xhigh` → `max` → `ultracode` (`ultracode` is opus-only). Sonnet agents top out at `max`.
+**The three presets** (each sets **MAX** for the `opus` agents; standard dev is always `sonnet` @ `high`):
 
-**"2 steps below MAX"** for the standard dev default (clamped to `low`, and never `ultracode` since dev agents are sonnet):
+| Preset | **MAX** (`opus` agents) | Standard dev (`sonnet`) |
+|--------|-------------------------|-------------------------|
+| `Max` (default, recommended) | `max` | `high` |
+| `High` | `xhigh` | `high` |
+| `Medium` | `high` | `high` |
 
-| MAX chosen | Standard dev default |
-|------------|----------------------|
-| `ultracode` | `xhigh` |
-| `max` | `high` |
-| `xhigh` | `medium` |
-| `high` | `low` |
-| `medium` | `low` |
-| `low` | `low` |
-
-`ultracode` is the recommended MAX for best results, at higher token cost. Setup always lets the user override the dev-agent default.
+**The effort ladder** (low → high): `low` → `medium` → `high` → `xhigh` → `max`. `Max` is the recommended preset for best results, at higher token cost.
 
 ---
 
@@ -111,7 +106,7 @@ name: solution-architect
 description: Creates technical implementation plans from requirements. Use when starting a new feature or need architectural guidance.
 tools: Read, Glob, Grep, Write, WebSearch
 model: opus
-effort: ultracode
+effort: max
 color: white
 ---
 
@@ -214,7 +209,7 @@ name: frontend-dev-advanced
 description: Heavyweight frontend implementation for major refactors, integration-heavy, or high-risk phases. Used by /proceed-advanced, or by /proceed after the user opts in.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: opus
-effort: ultracode
+effort: max
 color: blue
 ---
 
@@ -238,7 +233,7 @@ name: code-reviewer
 description: Reviews code for quality, security, and maintainability. Use PROACTIVELY after completing significant code changes.
 tools: Read, Grep, Glob, Bash
 model: opus
-effort: ultracode
+effort: max
 color: red
 ---
 
@@ -380,7 +375,7 @@ When creating a new agent:
   - [ ] `color` - white (planner), blue (frontend), green (backend), red (reviewer), or other
   - [ ] `tools` - only what's needed (optional)
   - [ ] `model` - per the Model & Effort Policy (architects/advanced/reviewers → opus; standard dev → sonnet)
-  - [ ] `effort` - per the Model & Effort Policy (opus agents → chosen MAX; standard dev → 2 steps below MAX)
+  - [ ] `effort` - per the Model & Effort Policy (opus agents → preset's MAX; standard dev → `high`)
 - [ ] Write detailed system prompt
   - [ ] Clear role definition
   - [ ] Step-by-step process

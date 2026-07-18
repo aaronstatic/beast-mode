@@ -1,5 +1,5 @@
 ---
-description: Review an epic holistically -- cross-feature integration, architecture fit, and per-feature tech debt. Usage: /review-epic <name>
+description: "Review an epic holistically -- cross-feature integration, architecture fit, and per-feature tech debt. Usage: /review-epic <name>"
 ---
 
 You have been asked to review an **epic** holistically -- how its features integrate with each other and with the rest of the project, and what tech debt each feature carries.

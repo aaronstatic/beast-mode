@@ -5,6 +5,39 @@ All notable changes to the Beast Mode plugin will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+
+## [4.1.1] - 2026-07-18
+
+Patch release. Replaces the per-agent effort ladder with **three effort presets** — `Max` (default, recommended), `High`, and `Medium` — tuned against the latest DeepSWE benchmark results. A single question at setup now sets how hard the high-leverage `opus` agents (solution-architect, advanced dev, reviewers) think; standard dev agents run on `sonnet` @ `high` in every preset. **Backwards-compatible:** existing installed agents are untouched until you re-run setup/upgrade.
+
+### Changed
+
+- **`/install-beast-mode` Step 4b** now asks a single "effort preset" question (`Max` → `opus` @ `max`, `High` → `opus` @ `xhigh`, `Medium` → `opus` @ `high`) instead of the two-step "pick MAX, then derive standard-dev effort" flow. Standard dev agents are fixed at `sonnet` @ `high`. The downstream `<MAX>`/`<DEV>` placeholders used in agent creation are unchanged, so agent frontmatter is written exactly as before.
+- **`/upgrade-beast-mode`** mirrors the same preset question for the v2 → v3 agent migration.
+- **Docs** — `agent-structure-example.md` (Model & Effort Policy) and the `solution-architect` template now describe the preset model. Dropped `ultracode` and the "2 steps below MAX" derivation from Beast Mode's effort guidance; the `Max` preset tops out at `max`.
+
+---
+
+## [4.1.0] - 2026-07-17
+
+Minor release. Extracts Beast Mode's browser dashboard out of the Discord bot into a standalone, reusable, infrastructure-agnostic package — **`@beast-mode/web`** — adds a lightweight standalone server plus two plugin commands, and adds `/autorun-feature`. **Backwards-compatible:** the bridge-served dashboard, every `/api/*` contract, the `/auth/*` OAuth2 flow, and the desktop MCP server are unchanged; existing installs are untouched.
+
+### Added
+
+- **`@beast-mode/web` — reusable web-app package** (new repo-root `/web`). One package, three subpath exports: `@beast-mode/web/backend` (the dashboard's route handlers + feature/bug stores behind an injected `ProjectProvider` + optional `AuthMiddleware` — no bot/Discord/registry coupling and no module-global state), `@beast-mode/web/frontend` (the React dashboard behind `<BeastWebProvider>` with injectable API-client / auth / routing adapters; React·ReactDOM·react-router-dom as peers; Tailwind shipped as a preset + a prebuilt `@beast-mode/web/styles.css`), and `@beast-mode/web/server`. Built dual ESM+CJS with types (`publint` + `@arethetypeswrong/cli` clean); publish-ready but consumed locally in v1.
+
+- **Standalone dashboard server** (`@beast-mode/web/server` + the `beast-web` CLI) — a lightweight Hono app that serves the dashboard on its own from a `.env` (`BEAST_PROJECTS`, `PORT`, `BEAST_HOST`, optional `BEAST_TOKEN` bearer gating), single- and multi-project, running under Node (`@hono/node-server`) or Bun. Filesystem state only; no database.
+
+- **`/setup-web-app`** — plugin command that discovers the Beast Mode projects on your machine (or asks where to look), writes a `.env`, and installs an always-on background service for the standalone dashboard via your OS's service manager (launchd / `systemd --user` / Task Scheduler·NSSM·pm2). Idempotent; localhost-bound by default.
+
+- **`/integrate-web-app`** — plugin command that scaffolds a `requirements.md` to embed the dashboard into your own app (detecting an admin section, placing the feature inside a dev-ops-like epic if one exists) and hands off to `/plan-feature`. Writes no implementation.
+
+- **`/autorun-feature [feature-name]`** - Autonomously run a feature to completion with minimal human intervention, stopping only when genuinely blocked. Epic-aware and fully project-agnostic (`<epic>/<feature>` resolution; no hardcoded stack, tooling, agents, or URLs). Runs the whole lifecycle: if there's no `implementation.md` it plans from `requirements.md` via `/plan-feature` (batching any material scope gaps into a single question) and scaffolds docs via `/start-feature`, then drives the phase-by-phase loop from `tasks.md`. For each incomplete phase it delegates the implementation to an agent (one at a time, advanced tier for load-bearing / plan-flagged phases), runs the project's type-check/build/test gate, verifies user-facing UI via a browser MCP, updates `tasks.md`/`context.md`, commits the phase, then runs `/review-feature` and fixes every `CR-N` finding before moving on. After the final phase it does a cross-phase `/review-feature`, `/update-feature`, and `/update-master`. Strict safety rails: it commits locally on the feature branch only (never the main/default branch, tags, deploy, or release) and **stops before pushing** — it hands the branch back for the user to push / open the PR. Stops and prompts the user on any blocker (MCP unreachable, repeated gate failure, missing credential/prerequisite, irreversible/outward-facing action, merge conflict). Resumable: re-running it picks up from the first incomplete phase. Composes the existing `/plan-feature` -> `/start-feature` -> `/proceed` -> `/review-feature` -> `/update-feature` -> `/update-master` commands into one hands-off run. Also available over the Discord bridge as `/beast autorun [feature]`.
+
+### Changed
+
+- **The Discord bot is now a consumer of `@beast-mode/web`.** The bot's seven backend modules (`api-projects` / `api-features` / `api-epics` / `api-bugs` / `api-git`, `feature-store`, `bug-store`) and its `bot/web/src` React app were removed; `bot.ts` now mounts `@beast-mode/web/backend` — injecting its project registry as a `ProjectProvider` and its Discord OAuth2 as the auth gate — and `bot/web` is a thin shell around `@beast-mode/web/frontend`. Internal refactor only: the bridge-served dashboard, every `/api/*` URL and response shape, the `/auth/*` OAuth2 flow, and the desktop MCP server's contract are all unchanged.
+
 ---
 
 ## [4.0.0] - 2026-06-16

@@ -1,5 +1,5 @@
 ---
-description: Group existing prefixed features into an epic (move + un-prefix + rewrite references) with a mandatory preview/confirm. Usage: /create-epic <epic-name> <prompt>
+description: "Group existing prefixed features into an epic (move + un-prefix + rewrite references) with a mandatory preview/confirm. Usage: /create-epic <epic-name> <prompt>"
 ---
 
 You have been asked to create an **epic** by migrating existing related features into a single epic folder.

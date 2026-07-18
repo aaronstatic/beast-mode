@@ -1,5 +1,5 @@
 ---
-description: Update project master overview with latest feature progress, status, and changelog. Usage: /update-master [feature-name]
+description: "Update project master overview with latest feature progress, status, and changelog. Usage: /update-master [feature-name]"
 ---
 
 You have been asked to update the project's master overview documentation with the most recent changes.

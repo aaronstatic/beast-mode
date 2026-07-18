@@ -1,5 +1,5 @@
 ---
-description: Install the Beast Mode statusline into the user's Claude Code settings. Adds a custom status bar showing folder + git status on line 1 and context/rate-limit progress bars on line 2. Usage: /install-statusline
+description: "Install the Beast Mode statusline into the user's Claude Code settings. Adds a custom status bar showing folder + git status on line 1 and context/rate-limit progress bars on line 2. Usage: /install-statusline"
 ---
 
 You are installing the **Beast Mode statusline** into the user's Claude Code settings (`~/.claude/settings.json`).

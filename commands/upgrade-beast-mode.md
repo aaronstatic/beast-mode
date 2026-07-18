@@ -1,5 +1,5 @@
 ---
-description: Upgrade Beast Mode installation in this project with latest templates, commands, and improvements from the plugin. Usage: /upgrade-beast-mode
+description: "Upgrade Beast Mode installation in this project with latest templates, commands, and improvements from the plugin. Usage: /upgrade-beast-mode"
 ---
 
 You have been asked to upgrade the Beast Mode installation in this project.
@@ -292,11 +292,11 @@ This is a **major upgrade**. v3 introduces per-agent `model`/`effort` tuning and
 ⚠️  MAJOR VERSION UPGRADE: v2 → v3
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Beast Mode v3 adds agent effort tuning:
-  • solution-architect → opus, at your MAX effort
-  • advanced dev agents (NEW) → opus, at your MAX effort
-  • review & evaluation agents → opus, at your MAX effort
-  • standard dev agents → sonnet, a couple steps lower
+Beast Mode v3 adds agent effort tuning (3 presets):
+  • solution-architect → opus @ your preset effort
+  • advanced dev agents (NEW) → opus @ your preset effort
+  • review & evaluation agents → opus @ your preset effort
+  • standard dev agents → sonnet @ high (fixed)
 
 I'll ask you to pick effort levels, then:
   • add effort fields to your existing agents
@@ -308,20 +308,13 @@ frontmatter (model/effort) changes.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-**2. Ask for effort levels** — identical to Step 4b of `/install-beast-mode`:
-- Ask for the **MAX** effort level (4 options only — `AskUserQuestion` max is 4: `ultracode` *(recommended)*, `max`, `xhigh`, `high`; `medium`/`low` via the auto-provided "Other"). This applies to solution-architect, advanced dev agents, and reviewers.
-- Derive the **DEV** default as **2 steps below MAX** on the ladder `low → medium → high → xhigh → max → ultracode` (clamped to `low`, never `ultracode`):
+**2. Ask for the effort preset** — identical to Step 4b of `/install-beast-mode`. Present the three presets in a single `AskUserQuestion` (`Max` recommended/first, then `High`, `Medium`). The preset sets how hard the high-leverage `opus` agents (solution-architect, advanced dev, reviewers) think; standard dev agents always run on `sonnet` @ `high`. From the choice, derive **MAX** (the `opus` agents) and **DEV** (the `sonnet` standard dev agents, always `high`):
 
-  | MAX | DEV default |
-  |-----|-------------|
-  | `ultracode` | `xhigh` |
-  | `max` | `high` |
-  | `xhigh` | `medium` |
-  | `high` | `low` |
-  | `medium` | `low` |
-  | `low` | `low` |
-
-  Confirm or let the user override DEV (sonnet-valid levels only).
+  | Preset | **MAX** (`opus`) | **DEV** (`sonnet`) |
+  |--------|------------------|--------------------|
+  | `Max` (default, recommended) | `max` | `high` |
+  | `High` | `xhigh` | `high` |
+  | `Medium` | `high` | `high` |
 
 **3. Migrate existing agents** in `.claude/agents/`:
 

@@ -68,12 +68,8 @@ import {
   getClientIP,
 } from "./http-helpers.ts";
 import { processAttachments } from "./attachments.ts";
-import { handleApiProjectsRoutes } from "./api-projects.ts";
-import { handleApiFeaturesRoutes } from "./api-features.ts";
-import { handleApiEpicsRoutes } from "./api-epics.ts";
-import { handleApiBugsRoutes } from "./api-bugs.ts";
-import { handleApiGitRoutes } from "./api-git.ts";
 import { handleApiAuthRoutes, requireApiKeyOrAuth } from "./api-auth.ts";
+import { createBotBackend } from "./web-backend.ts";
 import type { GuildTextBasedChannel } from "discord.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "beast-mode-discord");
@@ -385,6 +381,11 @@ async function handleDiscordRoutes(
 // Build and start the Bun HTTP server
 
 function startHttpServer(client: Client, config: Config): ReturnType<typeof Bun.serve> {
+  // Construct the @beast-mode/web backend once — a ProjectProvider over the
+  // registry (hmacSecret stripped) + the bot's logger. Auth stays the bot's
+  // existing /api/* gate below (no auth middleware injected — see web-backend.ts).
+  const beastBackend = createBotBackend(config);
+
   return Bun.serve({
     port: config.botPort,
     async fetch(req: Request, server: { requestIP(req: Request): { address: string } | null }) {
@@ -419,24 +420,14 @@ function startHttpServer(client: Client, config: Config): ReturnType<typeof Bun.
         }
       }
 
-      // 4. API routes — apply CORS to all responses
-      const apiHandlers = [
-        handleApiProjectsRoutes,
-        handleApiFeaturesRoutes,
-        handleApiEpicsRoutes,
-        handleApiBugsRoutes,
-        handleApiGitRoutes,
-      ];
-
-      for (const handler of apiHandlers) {
-        try {
-          const response = await handler(req, url, config);
-          if (response) return withCors(response);
-        } catch (err) {
-          botLog.error(`API route error: ${url.pathname}`, { err: String(err) });
-          return withCors(errorResponse("Internal server error", 500));
-        }
-      }
+      // 4. API routes — dispatched to @beast-mode/web's backend. handle() already
+      //    applies CORS (idempotent, so no re-wrap here) and reproduces the old
+      //    apiHandlers loop exactly: the same ordered projects → features → epics
+      //    → bugs → git dispatch, a CORS-wrapped 500 on a handler throw (logged via
+      //    the injected botLog), and null when nothing matched so we fall through
+      //    to the SPA static serve below.
+      const resp = await beastBackend.handle(req, url);
+      if (resp) return resp;
 
       // 5. SPA static file serving
       if (req.method === "GET") {

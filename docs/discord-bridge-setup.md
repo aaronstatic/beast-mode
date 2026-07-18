@@ -169,18 +169,25 @@ After setup, these slash commands are available in mapped channels:
 | `/beast plan <feature>` | Plan a new feature (creates implementation docs) |
 | `/beast start <feature>` | Begin implementation of a planned feature |
 | `/beast proceed [feature]` | Continue current feature implementation |
+| `/beast autorun [feature]` | Autonomously run a feature to completion (plan, build, review, docs); commits locally, stops before pushing |
 | `/beast suggest` | Get a suggestion for the next feature to work on |
 | `/beast review <feature>` | Run a code review on a feature |
 | `/beast audit <feature>` | Run an architecture audit on a feature |
 | `/beast status` | Show all registered projects and their online/offline status |
 | `/beast update <feature>` | Update feature docs (context, tasks) |
+| `/beast update-master [feature]` | Update the project master overview (`docs/overview.md`) with latest progress |
 | `/beast discover <feature>` | Discover and document an existing feature |
 | `/beast document <feature>` | Document a completed feature |
 | `/beast evaluate <feature>` | Evaluate a feature against its Definition of Done criteria |
 | `/beast review-ux [feature]` | Review UX quality of a feature or page |
+| `/beast review-pr [pr]` | Independent review of a PR (GitHub PR by number, or local changes pre-submit) |
 | `/beast continue <feature>` | Continue work on a feature from where you left off |
 | `/beast fix [feature]` | Fix all open bugs for a feature (or all bugs) |
 | `/beast fix-bug <bug>` | Fix a specific bug by ID |
+| `/beast create-epic <epic> [prompt]` | Group existing prefixed features into an epic (move, un-prefix, rewrite references) |
+| `/beast plan-epic <epic> [prompt]` | Plan an epic from scratch — define its constituent features and build order |
+| `/beast update-epic [epic]` | Refresh an epic's overview and its single master-overview rollup row |
+| `/beast review-epic <epic>` | Review an epic holistically across all its features (integration + per-feature tech debt) |
 | `/beast upgrade` | Upgrade Beast Mode to the latest version |
 
 Commands create a thread in the channel where all progress updates and responses appear.

@@ -1,5 +1,5 @@
 ---
-description: Run UI/UX quality review -- layout, a11y, tokens, CSS, and live browser audit via Chrome MCP. Usage: /review-ui [layer]
+description: "Run UI/UX quality review -- layout, a11y, tokens, CSS, and live browser audit via Chrome MCP. Usage: /review-ui [layer]"
 ---
 
 You have been asked to run a UI/UX quality review on the frontend codebase.

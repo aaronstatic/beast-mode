@@ -1,5 +1,5 @@
 ---
-description: Update feature docs with current progress before compacting. Usage: /update-feature [feature-name]
+description: "Update feature docs with current progress before compacting. Usage: /update-feature [feature-name]"
 ---
 
 You have been asked to update the feature docs before compacting the conversation.

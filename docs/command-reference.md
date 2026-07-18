@@ -1,6 +1,6 @@
 # Beast Mode — Command Reference
 
-All 23 slash commands installed by `/install-beast-mode`, grouped by category.
+All 24 slash commands installed by `/install-beast-mode`, grouped by category.
 
 ---
 
@@ -14,6 +14,7 @@ All 23 slash commands installed by `/install-beast-mode`, grouped by category.
 | `/continue-feature <name>` | Loads feature context and shows a status summary — use at the start of each session |
 | `/proceed` | Picks up the next task and implements it using specialized agents; asks before using an advanced agent on major or high-risk phases |
 | `/proceed-advanced` | Forces advanced (opus, max-effort) agents, one phase at a time, then stops |
+| `/autorun-feature [name]` | Runs a whole feature to completion autonomously: plans (if no `implementation.md`) and starts it, then per phase implements, gates, verifies UI via browser MCP, commits, and runs `/review-feature` + fixes all findings; ends with a cross-phase review, `/update-feature`, and `/update-master`. Epic-aware. Commits locally per phase but **stops before pushing** — you push / open the PR. Stops and prompts on any blocker. Resumable |
 | `/update-feature <name>` | Saves progress to docs — **always run before ending a session** |
 | `/update-master` | Updates `docs/overview.md` with all feature progress and cross-feature connections |
 | `/discover-feature <name>` | Documents an existing feature by analyzing its code; does not change code |

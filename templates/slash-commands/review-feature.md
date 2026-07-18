@@ -1,5 +1,5 @@
 ---
-description: Review a feature's code against Vercel best practices. Usage: /review-feature [feature-name]
+description: "Review a feature's code against Vercel best practices. Usage: /review-feature [feature-name]"
 ---
 
 You have been asked to review an existing feature's code against best practices.

@@ -1,5 +1,5 @@
 ---
-description: Fix a specific bug by ID. Usage: /fix-bug [bug-ID]
+description: "Fix a specific bug by ID. Usage: /fix-bug [bug-ID]"
 ---
 
 You have been asked to fix a specific bug.

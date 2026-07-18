@@ -1,5 +1,5 @@
 ---
-description: Suggest the next feature to develop based on project state, mission statement, and technical design. Usage: /suggest-feature
+description: "Suggest the next feature to develop based on project state, mission statement, and technical design. Usage: /suggest-feature"
 ---
 
 You have been asked to suggest what feature should be developed next.

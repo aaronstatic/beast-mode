@@ -1,5 +1,5 @@
 ---
-description: Fix all open bugs linked to a feature. Usage: /fix-feature [feature-name]
+description: "Fix all open bugs linked to a feature. Usage: /fix-feature [feature-name]"
 ---
 
 You have been asked to fix all open bugs linked to a feature.

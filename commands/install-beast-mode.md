@@ -107,55 +107,47 @@ Manually copy files from `${CLAUDE_PLUGIN_ROOT}/templates/` to project using the
 
 ---
 
-### Step 4b: Choose Agent Effort Levels
+### Step 4b: Choose Agent Effort Preset
 
-Beast Mode v3 tunes each agent's `model` and reasoning `effort` by role. Before creating agents, ask the user how hard they want the agents to think. Explain it briefly:
+Beast Mode tunes each agent's `model` and reasoning `effort` by role. Rather than a per-agent ladder, offer **three presets** (tuned against the latest DeepSWE benchmark results). Standard dev agents always run on `sonnet` at `high` effort — the plan carries the architectural thinking, so extra effort there buys little. The presets differ only in how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. Explain it briefly:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-AGENT EFFORT LEVELS
+AGENT EFFORT PRESET
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Beast Mode runs different agents at different strengths:
-  • solution-architect → opus, at your MAX effort (planning is high-leverage)
-  • advanced dev agents → opus, at your MAX effort (hard/risky phases)
-  • review & evaluation → opus, at your MAX effort
-  • standard dev agents → sonnet, a couple steps lower (the plan carries the thinking)
+Standard dev agents always run on sonnet @ high effort
+(the plan already carries the thinking). Pick how hard
+the high-leverage agents think:
+
+  Preset   solution-architect / advanced dev / review
+  ───────  ───────────────────────────────────────────
+  Max      opus @ max      ← default, best results
+  High     opus @ xhigh
+  Medium   opus @ high     ← leanest token use
 
 Higher effort = better results, more tokens.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-**1. Ask for the MAX effort level.** Use `AskUserQuestion`:
+**Ask for the preset.** Use `AskUserQuestion`:
 
-- **Question:** "What MAXIMUM effort level should the high-end agents (solution-architect, advanced dev, reviewers) use? Higher = better quality but more tokens."
-- **Header:** "Max effort"
-- **Options** (exactly these four — `AskUserQuestion` allows max 4; users can pick `medium`/`low` via the auto-provided "Other"):
-  1. `ultracode` — "Highest (opus only). Best results. **Recommended** — but uses the most tokens." *(recommended/first)*
-  2. `max` — "Maximum standard effort."
-  3. `xhigh` — "Very high effort."
-  4. `high` — "High effort, leaner token use."
+- **Question:** "Which agent effort preset? This sets how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. Standard dev agents always run on sonnet @ high."
+- **Header:** "Effort preset"
+- **Options:**
+  1. `Max` — "opus @ max for high-leverage agents. Best results. **Recommended.**" *(recommended/first)*
+  2. `High` — "opus @ xhigh. Strong results, somewhat leaner on tokens."
+  3. `Medium` — "opus @ high. Leanest token use."
 
-The chosen value is **MAX** (if the user picks `medium` or `low` via "Other", honor it).
+From the chosen preset, derive the two effort values used in Step 5 — **MAX** (the `opus` high-leverage agents: solution-architect, advanced dev, reviewers) and **DEV** (the `sonnet` standard dev agents, always `high`):
 
-**2. Derive and confirm the standard dev-agent effort.** Standard dev agents run on `sonnet`, defaulting to **2 steps below MAX** on this ladder (`low` → `medium` → `high` → `xhigh` → `max` → `ultracode`), clamped to `low`, and never `ultracode` (sonnet can't use it):
+| Preset | **MAX** (`opus`) | **DEV** (`sonnet`) |
+|--------|------------------|--------------------|
+| `Max` (default) | `max` | `high` |
+| `High` | `xhigh` | `high` |
+| `Medium` | `high` | `high` |
 
-| MAX chosen | Recommended standard-dev effort |
-|------------|---------------------------------|
-| `ultracode` | `xhigh` |
-| `max` | `high` |
-| `xhigh` | `medium` |
-| `high` | `low` |
-| `medium` | `low` |
-| `low` | `low` |
-
-Use `AskUserQuestion` to confirm or override:
-
-- **Question:** "Standard dev agents (sonnet) will use **`<recommended>`** effort by default (2 steps below your MAX). Keep it or change it?"
-- **Header:** "Dev effort"
-- **Options** (max 4): the recommended value first labeled "(Recommended)", then up to 3 nearby sonnet-valid levels (from `low`/`medium`/`high`/`xhigh`/`max`); any remaining level is reachable via the auto-provided "Other".
-
-Remember the two chosen values as **MAX** and **DEV** — you'll write them into agent frontmatter in Step 5.
+Remember the chosen preset's **MAX** and **DEV** values — you'll write them into agent frontmatter in Step 5.
 
 ---
 

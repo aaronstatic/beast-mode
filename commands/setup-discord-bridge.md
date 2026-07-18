@@ -1,5 +1,5 @@
 ---
-description: Guided first-time setup for the Beast Mode Discord Bridge. Configures the central bot, per-project channel, and starts services. Usage: /setup-discord-bridge
+description: "Guided first-time setup for the Beast Mode Discord Bridge. Configures the central bot, per-project channel, and starts services. Usage: /setup-discord-bridge"
 ---
 
 You are setting up the **Beast Mode Discord Bridge** — a two-way connection between Discord and Claude Code sessions.

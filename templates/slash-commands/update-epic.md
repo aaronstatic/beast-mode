@@ -1,5 +1,5 @@
 ---
-description: Refresh an epic's overview and master rollup row with the latest progress from its child features. Usage: /update-epic [name]
+description: "Refresh an epic's overview and master rollup row with the latest progress from its child features. Usage: /update-epic [name]"
 ---
 
 You have been asked to update an epic's documentation with the most recent changes from its child features.

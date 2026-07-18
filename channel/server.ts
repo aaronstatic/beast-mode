@@ -51,6 +51,7 @@ const COMMAND_MAP: Record<string, string> = {
   discover: "discover-feature",
   document: "document-feature",
   proceed: "proceed",
+  autorun: "autorun-feature",
   fix: "fix-feature",
   "fix-bug": "fix-bug",
   "update-master": "update-master",

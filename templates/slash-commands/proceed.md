@@ -1,5 +1,5 @@
 ---
-description: Proceed work on the current feature. Usage: /proceed
+description: "Proceed work on the current feature. Usage: /proceed"
 ---
 
 You have been asked to continue work on the current feature. You should know which feature this is and this command should be run after /start-feature, /continue-feature, or /review-feature.

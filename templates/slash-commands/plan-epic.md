@@ -1,5 +1,5 @@
 ---
-description: Plan an epic from scratch — define the set of constituent features, their build order, and scaffold the epic folder with requirements. Usage: /plan-epic <epic-name> [initial requirements prompt]
+description: "Plan an epic from scratch - define the set of constituent features, their build order, and scaffold the epic folder with requirements. Usage: /plan-epic <epic-name> [initial requirements prompt]"
 ---
 
 You have been asked to plan an **epic** — a group of related features that together deliver a coherent part of the system.

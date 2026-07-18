@@ -9,6 +9,13 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
     },
+    // @beast-mode/web/frontend externalizes react / react-dom / react-router-dom
+    // as peers, and the lib's built files live in the linked @beast-mode/web
+    // package (which carries its own copies for building). Without dedupe, Vite
+    // would realpath into that package and bundle a SECOND React -> "invalid hook
+    // call". Dedupe forces all three (incl. react/jsx-runtime) to resolve from
+    // THIS app's node_modules — a single React instance.
+    dedupe: ['react', 'react-dom', 'react-router-dom'],
   },
   server: {
     proxy: {
