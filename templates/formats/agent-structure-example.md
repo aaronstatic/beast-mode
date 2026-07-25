@@ -12,7 +12,7 @@ Agents are specialized workflows that automate common tasks. They're defined as 
 ---
 name: your-agent-name
 description: Natural language description of when to use this agent
-model: sonnet
+model: opus
 effort: high
 color: green
 ---
@@ -46,22 +46,22 @@ Place agents in `.claude/agents/` (project-specific, highest priority)
 
 ## Model & Effort Policy
 
-Beast Mode tunes `model` and `effort` by the agent's role. The user picks one of **three effort presets** at `/install-beast-mode` / `/upgrade-beast-mode`; every agent's effort derives from it. The preset sets **MAX** — how hard the high-leverage `opus` agents think. Standard dev agents always run on `sonnet` at `high`, because the architectural thinking already lives in the plan.
+Beast Mode tunes `model` and `effort` by the agent's role. The user picks one of **three effort presets** at `/install-beast-mode` / `/upgrade-beast-mode`; every agent's effort derives from it. With Opus 5, **every agent runs on `opus`** (`sonnet` is retired). The preset sets **MAX** — how hard the high-leverage agents think. Standard dev agents always run at `medium`, because the architectural thinking already lives in the plan.
 
 | Agent role | Model | Effort | Rationale |
 |------------|-------|--------|-----------|
 | **solution-architect** | `opus` | the preset's **MAX** | Architecture is the highest-leverage thinking — do it at full strength so the plan carries the load |
-| **Standard dev agents** (`frontend-dev`, `backend-dev`, `ml-dev`, `dev`, …) | `sonnet` | `high` (fixed) | The hard thinking already lives in the plan; implementation runs leaner and cheaper |
+| **Standard dev agents** (`frontend-dev`, `backend-dev`, `ml-dev`, `dev`, …) | `opus` | `medium` (fixed) | The hard thinking already lives in the plan; implementation runs leaner and cheaper |
 | **Advanced dev agents** (`frontend-dev-advanced`, …) | `opus` | the preset's **MAX** | For major refactors / integration-heavy / high-risk phases — invoked by `/proceed-advanced` or by `/proceed` after asking the user |
 | **Review / evaluation agents** (code review, PR review, `/evaluate-feature`) | `opus` | the preset's **MAX** | A weak reviewer rubber-stamps weak work — reviewing always justifies the strongest setting |
 
-**The three presets** (each sets **MAX** for the `opus` agents; standard dev is always `sonnet` @ `high`):
+**The three presets** (each sets **MAX**; standard dev is always `opus` @ `medium`):
 
-| Preset | **MAX** (`opus` agents) | Standard dev (`sonnet`) |
-|--------|-------------------------|-------------------------|
-| `Max` (default, recommended) | `max` | `high` |
-| `High` | `xhigh` | `high` |
-| `Medium` | `high` | `high` |
+| Preset | **MAX** (`opus` agents) | Standard dev (`opus`) |
+|--------|-------------------------|-----------------------|
+| `Max` (default, recommended) | `max` | `medium` |
+| `High` | `xhigh` | `medium` |
+| `Medium` | `high` | `medium` |
 
 **The effort ladder** (low → high): `low` → `medium` → `high` → `xhigh` → `max`. `Max` is the recommended preset for best results, at higher token cost.
 
@@ -154,8 +154,8 @@ Focus on WHAT to build and WHY, reference skills for HOW.
 name: frontend-dev
 description: Implements React/TypeScript features using dev docs and skills. Use after implementation plan exists.
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
-effort: high
+model: opus
+effort: medium
 color: blue
 ---
 
@@ -223,7 +223,7 @@ Same process and skills as `frontend-dev`, but:
 - You run at maximum effort — use it: reason through edge cases the plan didn't anticipate
 ```
 
-> The `effort` value mirrors the MAX chosen at setup. The standard `frontend-dev` runs on sonnet at a lower effort; this advanced variant runs on opus at MAX.
+> The `effort` value mirrors the MAX chosen at setup. The standard `frontend-dev` runs on opus at `medium` effort; this advanced variant runs on opus at MAX.
 
 ### Example 3: code-reviewer (Quality Assurance)
 
@@ -288,8 +288,8 @@ Clear, actionable feedback with:
 name: error-debugger
 description: Systematically debugs TypeScript/runtime errors. Use when encountering errors.
 tools: Read, Grep, Bash, Edit
-model: sonnet
-effort: high
+model: opus
+effort: medium
 color: yellow
 ---
 
@@ -374,7 +374,7 @@ When creating a new agent:
   - [ ] `description` - clear, natural language
   - [ ] `color` - white (planner), blue (frontend), green (backend), red (reviewer), or other
   - [ ] `tools` - only what's needed (optional)
-  - [ ] `model` - per the Model & Effort Policy (architects/advanced/reviewers → opus; standard dev → sonnet)
+  - [ ] `model` - per the Model & Effort Policy (all Beast Mode agents → `opus`; roles differ only by effort)
   - [ ] `effort` - per the Model & Effort Policy (opus agents → preset's MAX; standard dev → `high`)
 - [ ] Write detailed system prompt
   - [ ] Clear role definition

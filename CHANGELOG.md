@@ -6,14 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [4.1.1] - 2026-07-18
+## [4.1.2] - 2026-07-25
 
-Patch release. Replaces the per-agent effort ladder with **three effort presets** — `Max` (default, recommended), `High`, and `Medium` — tuned against the latest DeepSWE benchmark results. A single question at setup now sets how hard the high-leverage `opus` agents (solution-architect, advanced dev, reviewers) think; standard dev agents run on `sonnet` @ `high` in every preset. **Backwards-compatible:** existing installed agents are untouched until you re-run setup/upgrade.
+Patch release. Refines `/plan-feature`'s research step so it defaults to a lightweight web search and only escalates to deep research when the decision genuinely warrants it — and ensures **all research completes before the solution-architect handoff**, since that agent has no web/research access.
 
 ### Changed
 
-- **`/install-beast-mode` Step 4b** now asks a single "effort preset" question (`Max` → `opus` @ `max`, `High` → `opus` @ `xhigh`, `Medium` → `opus` @ `high`) instead of the two-step "pick MAX, then derive standard-dev effort" flow. Standard dev agents are fixed at `sonnet` @ `high`. The downstream `<MAX>`/`<DEV>` placeholders used in agent creation are unchanged, so agent frontmatter is written exactly as before.
-- **`/upgrade-beast-mode`** mirrors the same preset question for the v2 → v3 agent migration.
+- **`/plan-feature` Step 4b** now offers **quick web search** (recommended, via the `WebSearch` tool) vs **deep research** (via `/deep-research`, for high-stakes calls) vs **no research** — replacing the old "run deep research now / have the solution-architect do it / no" choice. It no longer defers research to the architect.
+- **Research findings flow into the plan as data, not a delegated task.** Whatever research the main thread runs is summarized and passed into the solution-architect prompt as a new **Research Findings** block; the architect cites it in Key Technical Decisions.
+- **`solution-architect` template** — its "Deep Research (when asked)" step is replaced with "Incorporate Provided Research": the agent is told it has no `/deep-research`/workflow access, works from the provided findings, and may only use `WebSearch` for light verification. Also updated the advanced-vs-standard routing hint to phrase the distinction as effort (both tiers are `opus`).
+
+## [4.1.1] - 2026-07-18
+
+Patch release. Replaces the per-agent effort ladder with **three effort presets** — `Max` (default, recommended), `High`, and `Medium` — tuned against the latest DeepSWE benchmark results. With **Opus 5** released, Beast Mode now runs **every agent on `opus`** and retires `sonnet`: standard dev agents run on `opus` @ `medium` in all three presets, and a single question at setup sets how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. **Backwards-compatible:** existing installed agents are untouched until you re-run setup/upgrade.
+
+### Changed
+
+- **All Beast Mode agents now run on `opus`; `sonnet` is retired.** Standard dev agents run at `medium` effort (the plan already carries the architectural thinking); the high-leverage agents run at the preset's effort.
+- **`/install-beast-mode` Step 4b** now asks a single "effort preset" question — `Max` → `max`, `High` → `xhigh`, `Medium` → `high` for the high-leverage agents (standard dev fixed at `medium`) — instead of the two-step "pick MAX, then derive standard-dev effort" flow. The downstream `<MAX>`/`<DEV>` placeholders used in agent creation are unchanged.
+- **`/upgrade-beast-mode`** mirrors the same preset question and migrates existing standard dev agents from `sonnet` to `opus` @ `medium`.
 - **Docs** — `agent-structure-example.md` (Model & Effort Policy) and the `solution-architect` template now describe the preset model. Dropped `ultracode` and the "2 steps below MAX" derivation from Beast Mode's effort guidance; the `Max` preset tops out at `max`.
 
 ---

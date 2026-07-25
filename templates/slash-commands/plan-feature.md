@@ -78,7 +78,7 @@ This context informs smarter questions and better approach recommendations.
 
 **Apply YAGNI ruthlessly** - if a requirement sounds like a "nice to have" or "future consideration", push back. Ask: "Is this essential for the first version?" Keep scope tight.
 
-### 4b. Assess Whether Deep Research Is Needed
+### 4b. Assess Whether Research Is Needed
 
 Before proposing approaches, judge whether this feature depends on **external knowledge you can't reliably answer from the codebase or general knowledge** — for example:
 
@@ -87,21 +87,27 @@ Before proposing approaches, judge whether this feature depends on **external kn
 - Regulatory, security, or compliance specifics that must be accurate
 - Anything where a wrong external fact would send the architecture down the wrong path
 
-If you identify such a need, **ask the user first** — do not run research silently. Use `AskUserQuestion`:
+Two constraints shape how you handle this:
+
+- **All research happens here, before handoff.** The solution-architect agent has no web or research access — it can only work from what you pass it. Anything external must be gathered now, not delegated to the architect.
+- **Match the tool to the need — don't over-reach.** Most questions are answered by a quick web search; reserve deep research for genuinely high-stakes decisions where a wrong external fact would be costly to unwind. Don't reach for deep research when a simple search would do.
+
+If you identify a research need, **ask the user first** — do not run research silently. Use `AskUserQuestion`:
 
 ```
-This feature would benefit from deep research on <topic> before I lock in scope/approach
-(e.g. comparing <X> vs <Y>, current best practice for <Z>). Deep research is slower and
-uses more tokens but reduces the chance of building on a wrong assumption.
+This feature would benefit from some research on <topic> before I lock in scope/approach
+(e.g. comparing <X> vs <Y>, current best practice for <Z>).
 
-  • Yes — run deep research now, before we decide scope   (recommended when the decision hinges on it)
-  • Yes — but have the solution-architect do it while writing the plan
+  • Quick web search now — fast, usually enough                        (recommended)
+  • Deep research now — slower / more tokens, for high-stakes calls where a wrong fact is costly
   • No — proceed with what we know
 ```
 
-- **"Run deep research now"** → use the **`/deep-research`** command yourself with a focused question, summarize the verified findings for the user, and let them inform the approach options in Step 5.
-- **"Have the solution-architect do it"** → skip research here and set a flag to pass into Step 7 (the agent will run `/deep-research` as part of planning).
+- **"Quick web search now"** → use the **`WebSearch`** tool with focused queries, cross-check a couple of sources, and summarize the findings for the user.
+- **"Deep research now"** → use the **`/deep-research`** command with a focused question and summarize the verified findings for the user.
 - **"No"** → continue normally.
+
+Either way, **capture the findings** and: (a) let them inform the approach options in Step 5, and (b) pass them into the solution-architect prompt in Step 7 as a **Research Findings** block. Never ask the architect to research — it can't.
 
 If no external research is needed (most features), skip this step silently.
 
@@ -140,6 +146,10 @@ Create an implementation plan for the following feature:
 
 **Chosen Approach:**
 <selected approach from step 5, with rationale>
+
+**Research Findings (include ONLY if research was done in Step 4b; omit this whole block otherwise):**
+<summary of the verified findings from the quick web search or deep research, with source URLs>
+Treat these as authoritative external context — cite them in Key Technical Decisions. Do NOT run further research; you have no web/research access.
 
 **Context:**
 - Project: [Detected from CLAUDE.md or project structure]
@@ -193,9 +203,9 @@ Use the existing implementation plans in this project as reference for format an
 - Build on existing project patterns rather than introducing new ones unnecessarily
 - Set the **Quality Bar** section — tailor the quality descriptors to the feature type (UI-heavy features emphasize visual polish and interaction feel; backend features emphasize reliability and data integrity; full-stack features cover both)
 - Write the **Definition of Done** with criteria specific enough that an independent evaluator with no implementation context could verify them
-- **If Step 4b flagged deep research for the architect:** explicitly instruct the solution-architect to use the **`/deep-research`** command for the identified topic(s) and to cite the verified findings in its Key Technical Decisions. Only include this instruction when the user chose that option — do not ask the architect to research by default.
+- **If Step 4b produced research findings:** fill in the **Research Findings** block above with the summarized, sourced findings so the architect can cite them in its Key Technical Decisions. The architect has no web or research access — never instruct it to research; all findings must be gathered before handoff. Omit the block entirely if no research was done.
 - **If this feature lives inside an epic:** fill in the **Epic Context** block above from the epic docs loaded in Step 3 (epic purpose, build order/position, sibling summaries, integration points, known tech debt) so the architect plans the feature to fit the epic. Omit that block entirely for a plain feature.
-- Flag any phases that are major refactors or touch many integration points as needing an **advanced (opus) dev agent**, so `/proceed` can route them correctly
+- Flag any phases that are major refactors or touch many integration points as needing an **advanced (max-effort) dev agent**, so `/proceed` can route them correctly
 
 ### 8. Verify Plan Was Created
 

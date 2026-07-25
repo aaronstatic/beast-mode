@@ -50,7 +50,7 @@ Progress: <X>/<Y> phases done
 
 Next phase: <next phase name>
   • Run /proceed-advanced again if this next phase is also major/integration-heavy
-  • Run /proceed for a standard (sonnet) agent if it's routine
+  • Run /proceed for a standard (opus, medium-effort) agent if it's routine
 ```
 
 Do not automatically continue to the next phase.

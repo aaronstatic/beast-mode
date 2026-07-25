@@ -109,14 +109,14 @@ Manually copy files from `${CLAUDE_PLUGIN_ROOT}/templates/` to project using the
 
 ### Step 4b: Choose Agent Effort Preset
 
-Beast Mode tunes each agent's `model` and reasoning `effort` by role. Rather than a per-agent ladder, offer **three presets** (tuned against the latest DeepSWE benchmark results). Standard dev agents always run on `sonnet` at `high` effort — the plan carries the architectural thinking, so extra effort there buys little. The presets differ only in how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. Explain it briefly:
+Beast Mode tunes each agent's `model` and reasoning `effort` by role. Rather than a per-agent ladder, offer **three presets** (tuned against the latest DeepSWE benchmark results). With Opus 5, every agent runs on `opus`; standard dev agents always run at `medium` effort — the plan carries the architectural thinking, so extra effort there buys little. The presets differ only in how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. Explain it briefly:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 AGENT EFFORT PRESET
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Standard dev agents always run on sonnet @ high effort
+Standard dev agents always run on opus @ medium effort
 (the plan already carries the thinking). Pick how hard
 the high-leverage agents think:
 
@@ -132,20 +132,20 @@ Higher effort = better results, more tokens.
 
 **Ask for the preset.** Use `AskUserQuestion`:
 
-- **Question:** "Which agent effort preset? This sets how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. Standard dev agents always run on sonnet @ high."
+- **Question:** "Which agent effort preset? This sets how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. Standard dev agents always run on opus @ medium."
 - **Header:** "Effort preset"
 - **Options:**
   1. `Max` — "opus @ max for high-leverage agents. Best results. **Recommended.**" *(recommended/first)*
   2. `High` — "opus @ xhigh. Strong results, somewhat leaner on tokens."
   3. `Medium` — "opus @ high. Leanest token use."
 
-From the chosen preset, derive the two effort values used in Step 5 — **MAX** (the `opus` high-leverage agents: solution-architect, advanced dev, reviewers) and **DEV** (the `sonnet` standard dev agents, always `high`):
+From the chosen preset, derive the two effort values used in Step 5 — **MAX** (the high-leverage agents: solution-architect, advanced dev, reviewers) and **DEV** (the standard dev agents, always `medium`). Every agent runs on `opus`:
 
-| Preset | **MAX** (`opus`) | **DEV** (`sonnet`) |
-|--------|------------------|--------------------|
-| `Max` (default) | `max` | `high` |
-| `High` | `xhigh` | `high` |
-| `Medium` | `high` | `high` |
+| Preset | **MAX** (`opus`) | **DEV** (`opus`) |
+|--------|------------------|------------------|
+| `Max` (default) | `max` | `medium` |
+| `High` | `xhigh` | `medium` |
+| `Medium` | `high` | `medium` |
 
 Remember the chosen preset's **MAX** and **DEV** values — you'll write them into agent frontmatter in Step 5.
 
@@ -172,7 +172,7 @@ Read file: ${CLAUDE_PLUGIN_ROOT}/templates/formats/agent-structure-example.md
 
 **Create TWO tiers for each detected domain:**
 
-1. **Standard dev agent** — `model: sonnet`, `effort: <DEV>` (the level chosen in Step 4b). The everyday workhorse.
+1. **Standard dev agent** — `model: opus`, `effort: <DEV>` (`medium`). The everyday workhorse.
 2. **Advanced dev agent** — same `name` with an `-advanced` suffix, `model: opus`, `effort: <MAX>`. For major refactors, integration-heavy, or high-risk phases. Invoked by `/proceed-advanced`, or by `/proceed` after the user opts in.
 
 So a full-stack project gets four dev agents: `frontend-dev`, `frontend-dev-advanced`, `backend-dev`, `backend-dev-advanced`.
@@ -195,8 +195,8 @@ So a full-stack project gets four dev agents: `frontend-dev`, `frontend-dev-adva
 name: frontend-dev
 description: Implements <domain> features from the plan. Use after an implementation plan exists.
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
-effort: <DEV>        # the value chosen in Step 4b
+model: opus
+effort: <DEV>        # standard dev = medium
 color: blue
 ---
 ```
@@ -221,15 +221,15 @@ color: blue
 5. **Important rules** — Always update dev docs, ask questions if plan is unclear, focus on clean code
 6. **Advanced agents only** — add: trace every integration point before touching shared code, prefer incremental verifiable steps, call out migration risks; "you run at maximum effort — use it on the edge cases the plan didn't anticipate."
 
-The standard and advanced agents for a domain share the same system prompt body; only the frontmatter (`name`, `model`, `effort`, `description`) and the extra "advanced" rules differ.
+The standard and advanced agents for a domain share the same system prompt body; both run on `opus`, so only the frontmatter (`name`, `effort`, `description`) and the extra "advanced" rules differ.
 
 **Show the user what was created:**
 ```
 Created dev agents (effort: standard=<DEV>, advanced=<MAX>):
-  - .claude/agents/frontend-dev.md           (sonnet, blue)
-  - .claude/agents/frontend-dev-advanced.md  (opus,   blue)
-  - .claude/agents/backend-dev.md            (sonnet, green)
-  - .claude/agents/backend-dev-advanced.md   (opus,   green)
+  - .claude/agents/frontend-dev.md           (opus, blue)
+  - .claude/agents/frontend-dev-advanced.md  (opus, blue)
+  - .claude/agents/backend-dev.md            (opus, green)
+  - .claude/agents/backend-dev-advanced.md   (opus, green)
 Tuned:
   - .claude/agents/solution-architect.md     (opus, effort=<MAX>)
 ```
@@ -397,7 +397,7 @@ BEAST MODE INSTALLED!
 
 What was installed:
   - Slash commands (.claude/commands/)
-  - Agents (.claude/agents/) [solution-architect (opus) + standard dev (sonnet) + advanced dev (opus)]
+  - Agents (.claude/agents/) [solution-architect (opus) + standard dev (opus, medium) + advanced dev (opus, max)]
   - Feature doc templates (.claude/templates/)
   - Format references (.claude/)
   - Directory structure (docs/features/)

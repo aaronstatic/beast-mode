@@ -38,7 +38,7 @@ You will only use agents to implement the next steps, keeping your own context c
 
 Beast Mode creates two tiers of dev agent for each domain:
 
-- **Standard** (e.g. `frontend-dev`, `backend-dev`) — `model: sonnet`, lower effort. The default for routine implementation work, because the architecture and decisions already live in the plan (written by the high-effort solution-architect).
+- **Standard** (e.g. `frontend-dev`, `backend-dev`) — `model: opus`, `medium` effort. The default for routine implementation work, because the architecture and decisions already live in the plan (written by the high-effort solution-architect).
 - **Advanced** (e.g. `frontend-dev-advanced`, `backend-dev-advanced`) — `model: opus`, maximum effort. For phases that are genuinely hard to get right.
 
 Before spawning an agent for a phase, **assess whether it warrants the advanced agent.** Signals that it does:
@@ -144,7 +144,7 @@ If the user hasn't intervened, proceed to the next fix automatically for LOW/MED
 **DO NOT** Implement the tasks yourself, always use agents
 **DO NOT** Spawn parallel agents, use one agent at a time
 **DO NOT** Ask agents to implement more than one phase/finding at a time (unless grouping related fixes in the same file)
-**DO** Choose the best agent for the current task — standard (sonnet) by default, advanced (opus, max effort) for major/integration-heavy/high-risk phases
+**DO** Choose the best agent for the current task — standard (opus, medium effort) by default, advanced (opus, max effort) for major/integration-heavy/high-risk phases
 **DO** Ask the user before switching to an advanced agent, naming the specific reasons and noting the higher token cost
 **DO** Determine if frontend testing and verification is required
 **DO** Update documentation between each step

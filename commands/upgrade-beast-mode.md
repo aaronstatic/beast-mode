@@ -296,7 +296,7 @@ Beast Mode v3 adds agent effort tuning (3 presets):
   • solution-architect → opus @ your preset effort
   • advanced dev agents (NEW) → opus @ your preset effort
   • review & evaluation agents → opus @ your preset effort
-  • standard dev agents → sonnet @ high (fixed)
+  • standard dev agents → opus @ medium (fixed)
 
 I'll ask you to pick effort levels, then:
   • add effort fields to your existing agents
@@ -308,18 +308,18 @@ frontmatter (model/effort) changes.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-**2. Ask for the effort preset** — identical to Step 4b of `/install-beast-mode`. Present the three presets in a single `AskUserQuestion` (`Max` recommended/first, then `High`, `Medium`). The preset sets how hard the high-leverage `opus` agents (solution-architect, advanced dev, reviewers) think; standard dev agents always run on `sonnet` @ `high`. From the choice, derive **MAX** (the `opus` agents) and **DEV** (the `sonnet` standard dev agents, always `high`):
+**2. Ask for the effort preset** — identical to Step 4b of `/install-beast-mode`. Present the three presets in a single `AskUserQuestion` (`Max` recommended/first, then `High`, `Medium`). Every agent runs on `opus`; the preset sets how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think; standard dev agents always run at `medium`. From the choice, derive **MAX** (the high-leverage agents) and **DEV** (the standard dev agents, always `medium`):
 
-  | Preset | **MAX** (`opus`) | **DEV** (`sonnet`) |
-  |--------|------------------|--------------------|
-  | `Max` (default, recommended) | `max` | `high` |
-  | `High` | `xhigh` | `high` |
-  | `Medium` | `high` | `high` |
+  | Preset | **MAX** (`opus`) | **DEV** (`opus`) |
+  |--------|------------------|------------------|
+  | `Max` (default, recommended) | `max` | `medium` |
+  | `High` | `xhigh` | `medium` |
+  | `Medium` | `high` | `medium` |
 
 **3. Migrate existing agents** in `.claude/agents/`:
 
 - **solution-architect** (and any planner/architect agent): set `model: opus` and `effort: <MAX>` in the frontmatter. (Leave the system prompt as-is. Note in the summary that the v3 template also adds optional `/deep-research` guidance they can pull in manually if wanted.)
-- **Each standard dev agent** (e.g. `frontend-dev`, `backend-dev`, `ml-dev`, `dev`, `game-dev`, and any project-specific dev agents that are NOT already `*-advanced`): ensure `model: sonnet` and set/add `effort: <DEV>`. Add the `effort:` line to the frontmatter if it's missing; otherwise update it.
+- **Each standard dev agent** (e.g. `frontend-dev`, `backend-dev`, `ml-dev`, `dev`, `game-dev`, and any project-specific dev agents that are NOT already `*-advanced`): set `model: opus` (migrating any older `sonnet` agents) and set/add `effort: <DEV>`. Add the `effort:` line to the frontmatter if it's missing; otherwise update it.
 - **Any code-review / PR-review / evaluator agent** the project has: set `model: opus` and `effort: <MAX>`.
 
 **4. Create advanced agents** — for each standard dev agent found, create a `<name>-advanced.md` if it doesn't already exist:
@@ -334,9 +334,9 @@ frontmatter (model/effort) changes.
 🔧 v3 agent migration:
   Effort: MAX=<MAX>, standard dev=<DEV>
   ✅ solution-architect.md      → opus, effort=<MAX>
-  ✅ frontend-dev.md            → sonnet, effort=<DEV>
+  ✅ frontend-dev.md            → opus, effort=<DEV>
   🆕 frontend-dev-advanced.md   → opus, effort=<MAX>
-  ✅ backend-dev.md             → sonnet, effort=<DEV>
+  ✅ backend-dev.md             → opus, effort=<DEV>
   🆕 backend-dev-advanced.md    → opus, effort=<MAX>
   🆕 /proceed-advanced command installed
 ```
@@ -580,9 +580,9 @@ Upgraded: v[old] → v[new]
 **For v3.0 upgrade, add:**
 
 🚀 MAJOR CHANGE - Agent Effort Tuning:
-  • Agents now carry model + effort: solution-architect, advanced
-    dev agents, and reviewers run on opus at your MAX effort;
-    standard dev agents run on sonnet a couple steps lower
+  • Agents now carry model + effort: all agents run on opus;
+    solution-architect, advanced dev agents, and reviewers run
+    at your MAX effort; standard dev agents run at medium
   • NEW advanced dev agents (frontend-dev-advanced, etc.) created
     for major refactors and high-risk phases
   • /proceed now asks before using an advanced agent on heavy phases
