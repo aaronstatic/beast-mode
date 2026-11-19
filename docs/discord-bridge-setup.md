@@ -169,7 +169,7 @@ After setup, these slash commands are available in mapped channels:
 | `/beast plan <feature>` | Plan a new feature (creates implementation docs) |
 | `/beast start <feature>` | Begin implementation of a planned feature |
 | `/beast proceed [feature]` | Continue current feature implementation |
-| `/beast autorun [feature]` | Autonomously run a feature to completion (plan, build, review, docs); commits locally, stops before pushing |
+| `/beast autorun [feature]` | Autonomously run a feature to completion (plan, build, review, docs); makes no commit and no push |
 | `/beast suggest` | Get a suggestion for the next feature to work on |
 | `/beast review <feature>` | Run a code review on a feature |
 | `/beast audit <feature>` | Run an architecture audit on a feature |

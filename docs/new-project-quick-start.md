@@ -77,7 +77,7 @@ Open Claude Code in your project directory and run:
 Claude will:
 
 1. **Ask about your project** — What are you building? What tech stack? What's the scope?
-2. **Set up the folder structure** — Creates `.claude/commands/`, `docs/features/`, agents, and templates
+2. **Set up the folder structure** — Creates `.claude/skills/`, `.beast-mode/`, `docs/features/`, and agents
 3. **Create dev agents** — Generates agents tailored to your tech stack (e.g. `frontend-dev`, `backend-dev`)
 4. **Create project docs** — Generates `docs/mission-statement.md` and `docs/technical-design.md`
 
@@ -88,13 +88,15 @@ After installation, you're ready to start developing immediately.
 ```
 my-project/
   .claude/
-    commands/              # The slash commands
-    agents/                # solution-architect + dev agents
-    skills/                # Knowledge base (grows as you build)
-    templates/             # Doc templates
+    skills/                 # The 31 command skills + your knowledge base (grows as you build)
+    agents/                 # solution-architect + dev agents
+  .beast-mode/
+    templates/              # Doc templates
+    harness.md              # The harness glossary
+    version.json            # The installed harness set
+    epic-resolution.md      # The epic logic reference
   docs/
     features/              # One folder per feature
-    templates/             # Doc templates
     mission-statement.md   # Project mission
     technical-design.md    # Technical design
   .gitignore               # Updated with Beast Mode entries
@@ -134,7 +136,7 @@ Or with a description to give Claude more context:
 
 Claude will:
 
-1. **Ask clarifying questions** — scope, constraints, user expectations
+1. **Run a plan interview** — numbered questions with a recommended answer, then a stop check that lists the assumptions
 2. **Propose 2-3 approaches** — each with trade-offs clearly explained
 3. **Create an implementation plan** — after you pick an approach
 4. **Define acceptance criteria** — a "Definition of Done" that can be evaluated later
@@ -366,6 +368,7 @@ Without a feature name, `/fix-feature` processes all open bugs across the projec
 | `/fix-bug <id>` | Bug fix | Fixes a specific bug by ID with feature context. |
 | `/fix-feature [name]` | Batch bug fix | Fixes all open bugs for a feature (or all bugs). |
 | `/create-epic <name>` | Group features | Creates a new epic to group related features together. |
+| `/suggest-epic` | Need epic ideas | Suggests 2-4 epics to build next based on project state. |
 | `/plan-epic <name>` | Plan epic | Plans all features inside an epic and sets the build order. |
 | `/update-epic <name>` | Epic progress | Updates epic overview with current status across all child features. |
 | `/review-epic <name>` | Epic review | Reviews all features in an epic for integration and completeness. |

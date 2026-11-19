@@ -31,8 +31,7 @@
 
 ### Related Files
 - `src/path/to/RelatedFile.ts` - [How it relates to this feature]
-- `docs/features/[feature]/prd.md` - Product requirements
-- `dev/active/[feature]/plan.md` - Implementation plan
+- `docs/features/[feature]/implementation.md` - Implementation plan
 
 ---
 
@@ -83,30 +82,13 @@
 
 ## API Integration
 
-### WebSocket Events
-- `event:name` - [What this event does]
-- `event:name` - [What this event does]
-
-### Services Used
-- **ServiceName** (`service-id`) - [What we use it for]
-- **ServiceName** (`service-id`) - [What we use it for]
-
-### API Endpoints (if applicable)
-- `POST /api/endpoint` - [Purpose]
-- `GET /api/endpoint` - [Purpose]
+- [The endpoints, events, or services this feature uses or adds, and what each one does]
 
 ---
 
 ## State Management
 
-### Zustand Stores
-- **useFeatureStore** - [What state it manages]
-  - `state.property` - [What it tracks]
-  - `state.action()` - [What it does]
-
-### Editor Store Integration
-- [How this feature integrates with editor store]
-- [What selectors are used]
+- [The state this feature reads or owns, where it lives, and what changes it]
 
 ---
 
@@ -126,6 +108,14 @@
 - [ ] [Test scenario 1]
 - [ ] [Test scenario 2]
 - [ ] [Edge case to verify]
+
+---
+
+## Needs Human Verification
+
+`/autorun-feature` adds one line per item that the verifier cannot check, for a person to test.
+
+- [ ] [Item that needs a human eye]
 
 ---
 
@@ -180,4 +170,4 @@
 
 ---
 
-*Update this file at the end of each work session. Run `/dev-docs-update` before compacting conversations.*
+*Update this file at the end of each work session. Run `/update-feature` before compacting conversations.*

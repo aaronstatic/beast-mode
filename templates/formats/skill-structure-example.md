@@ -1,13 +1,17 @@
 # Skill Structure - Progressive Disclosure Pattern
 
-**CRITICAL:** Skills must use the progressive disclosure pattern to keep context usage low. Claude only loads the files it needs for the current task.
+**CRITICAL:** Skills must use the progressive disclosure pattern to keep context usage low. The harness only loads the files it needs for the current task.
+
+This pattern applies to a knowledge skill. It does not apply to a Beast Mode command skill.
+A command skill carries a `## Harness` block in its body, and it holds a
+whole command in one `SKILL.md`. Skip it, and never trim it to fit the line count below.
 
 ---
 
 ## Structure
 
 ```
-.claude/skills/
+<harness skills directory>/
 └── your-skill-name/
     ├── SKILL.md                    # ← MUST BE UPPERCASE! Bare bones quick reference (~100-150 lines)
     ├── resource-1.md               # ← Detailed content (specific patterns)
@@ -15,13 +19,16 @@
     └── resource-3.md               # ← Detailed content (specific patterns)
 ```
 
-**⚠️ CRITICAL:** The main skill file MUST be named `SKILL.md` (ALL CAPS). Claude Code looks specifically for this filename.
+`<harness skills directory>` is the directory where the running harness discovers skills. Read `.beast-mode/harness.md` for the real path.
+
+**⚠️ CRITICAL:** The main skill file MUST be named `SKILL.md` (ALL CAPS). The harness looks specifically for this filename.
 
 ---
 
 ## SKILL.md Pattern (Bare Bones)
 
-The main `SKILL.md` file should be **SHORT** (~100-150 lines) and act as a **quick reference** that points to detailed resource files.
+The main `SKILL.md` file should be **SHORT** (~100-150 lines) and act as a **quick reference** that points to detailed resource files. This line count does not bind a command skill whose
+`SKILL.md` carries a `## Harness` block.
 
 ### Template Structure:
 
@@ -243,7 +250,7 @@ Contains all the deep React patterns, examples, gotchas, etc.
 
 ### ✅ Benefits:
 
-1. **Low context usage** - Claude only loads what it needs
+1. **Low context usage** - the harness only loads what it needs
 2. **Fast scanning** - Quick reference is easy to scan
 3. **Progressive depth** - Can go deeper when needed
 4. **Organized** - Separation of concerns
@@ -252,7 +259,7 @@ Contains all the deep React patterns, examples, gotchas, etc.
 ### ❌ Anti-Pattern (Don't Do This):
 
 ```
-.claude/skills/
+<harness skills directory>/
 └── everything-skill/
     └── SKILL.md              # ← 1000+ lines, everything in one file
 ```
@@ -269,11 +276,11 @@ Contains all the deep React patterns, examples, gotchas, etc.
 
 When creating a new skill:
 
-- [ ] Create skill directory in `.claude/skills/[name]/`
+- [ ] Create the skill directory `[name]/` in the harness skills directory
 - [ ] Write bare-bones `SKILL.md` (~100-150 lines)
   - [ ] ⚠️ **MUST be named `SKILL.md` (ALL CAPS)**
   - [ ] YAML frontmatter with name/description/version
-  - [ ] **A clear, specific `description:`** — this is what Claude Code uses to decide when to surface the skill, so make it a precise trigger (what it covers + when to reach for it). There is no separate rules/keyword file.
+  - [ ] **A clear, specific `description:`** — this is what the harness uses to decide when to surface the skill, so make it a precise trigger (what it covers + when to reach for it). There is no separate rules/keyword file.
   - [ ] "When to Use" section
   - [ ] Quick reference sections (2-3 sentences each)
   - [ ] Links to resource files
@@ -282,7 +289,7 @@ When creating a new skill:
   - [ ] Detailed patterns and examples
   - [ ] Gotchas and anti-patterns
   - [ ] Testing guidance
-- [ ] Sanity-check the `description` reads like a trigger (Claude Code loads the skill from it natively)
+- [ ] Sanity-check the `description` reads like a trigger (the harness loads the skill from it natively)
 
 ---
 
@@ -326,4 +333,4 @@ backend-api-patterns/
 
 ---
 
-**Remember:** The goal is to give Claude just enough context to know what's available, then load details only when needed!
+**Remember:** The goal is to give the agent just enough context to know what's available, then load details only when needed!

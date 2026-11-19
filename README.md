@@ -8,6 +8,8 @@ Based on the Reddit post: **"Claude Code is a beast: Tips from 6 months of hardc
 
 ## Installation
 
+**Prerequisite:** Node.js 20 or later. The installer CLI that `/install-beast-mode` runs is a Node script.
+
 ### 1. Add the Beast Mode marketplace
 
 ```
@@ -28,13 +30,13 @@ In any project directory, run:
 /beast-mode:install-beast-mode
 ```
 
-This sets up your project with slash commands, agents, doc templates, and a skills knowledge base.
+This sets up your project with command skills in `.claude/skills/`, agents, and a shared `.beast-mode/` directory of doc templates and reference files.
 
 ---
 
 ## What's Included
 
-**23 slash commands** covering a full feature-development lifecycle — planning, implementation, review, evaluation, bug tracking, and epics. See [Command Reference](docs/command-reference.md) for the full list.
+**31 command skills** covering a full feature-development lifecycle — planning, implementation, review, evaluation, bug tracking, epics, token reporting, session review, and Orca orchestration. See [Command Reference](docs/command-reference.md) for the full list.
 
 **Feature Docs** — Three Markdown files per feature (`implementation.md`, `context.md`, `tasks.md`) keep Claude's context alive across sessions. Nothing is lost between conversations.
 
@@ -44,13 +46,24 @@ This sets up your project with slash commands, agents, doc templates, and a skil
 
 **Epics** — Group related features into tracked epics with `/create-epic`, `/plan-epic`, `/update-epic`, `/review-epic`.
 
+**Token Reports** — See the token and step use of every session, and find the session that carries a flag, with `/token-report`.
+
+**Session Review** — Read the log of one session, not the code, with `/review-session`. It ranks findings that each quote one step, and it applies the ones you pick: a pointer, a check, or a rule line.
+
+**Orca Orchestration** — Run a feature or an epic as Orca agent tabs, one fresh tab per phase, with `/orca-feature`, `/orca-epic`, and `/orca-setup`. See [Orca Orchestration](docs/orca-orchestration.md).
+
+**Feature Pane** — In Claude Code 2.1.287 or later, `/feature [name]` opens a pane that shows the path, the status, the progress, the current phase with its tasks, and the open bugs of a feature. The pane redraws after an edit of the shown docs, and it starts no model request. An older release keeps every skill and command.
+
+**Dashboard Pane** — In Claude Code 2.1.287 or later, `/dashboard` opens a pane with four views: the project, an epic, a feature, and a bug. A Back button returns to the last view. A button fills the prompt with the next Beast Mode command, and it never sends the prompt. The pane redraws after an edit of a shown doc, and it starts no model request.
+
 ---
 
 ## Docs
 
 - [New Project Quick Start](docs/new-project-quick-start.md) — starting a brand new project with Beast Mode
 - [Existing Project Quick Start](docs/existing-project-quick-start.md) — adding Beast Mode to a project that already has code
-- [Command Reference](docs/command-reference.md) — all 23 slash commands
+- [Command Reference](docs/command-reference.md) — all 31 command skills
+- [Orca Orchestration](docs/orca-orchestration.md) — run a feature or an epic as Orca agent tabs
 - [Discord Bridge Setup](docs/discord-bridge-setup.md) — run Beast Mode workflows from any Discord channel
 - [Desktop MCP Setup](docs/desktop-mcp-setup.md) — manage projects from Claude Desktop, Cursor, or Windsurf
 
@@ -75,6 +88,22 @@ Browser-based interface for managing feature docs and bugs across all registered
 Exposes Beast Mode project data as 13 MCP tools for Claude Desktop, Cursor, Windsurf, or any MCP-compatible client. See [Desktop MCP Setup](docs/desktop-mcp-setup.md).
 
 ---
+
+## DeepSeek Harness
+
+Beast Mode also runs on DeepSeek Harness (dsh), pinned to `0.1.5-rc.1`.
+
+```
+dsh plugin --profile <name> add beast-mode
+```
+
+Then run `/install-beast-mode`. Files land in `.agents/skills/` and the shared `.beast-mode/` directory.
+
+A dsh web session also shows a "Beast Mode" tab beside the Chat tab. The tab holds the whole dashboard: seven run buttons on a feature page, three on an epic page, and a plain textarea editor in place of the rich one. Each button starts a new session and queues the matching command. Update the panel with `dsh plugin --profile <name> update beast-mode`, then reload the web UI. See [The dsh web panel](docs/dsh-web-panel.md) for the full guide.
+
+## Several harnesses on one project
+
+Install Beast Mode for Claude Code and for dsh in the same project. `.beast-mode/version.json` records both harnesses, and `.beast-mode/harness.md` holds one section per harness so each reads only its own tools. Run `beast-mode upgrade` with no harness to upgrade every installed harness in one run, and `beast-mode status` to see them all at a glance. See [Several harnesses on one project](docs/multi-harness.md) for the full guide.
 
 ## Upgrading
 

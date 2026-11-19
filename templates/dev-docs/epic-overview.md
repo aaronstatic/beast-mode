@@ -35,6 +35,9 @@ Which features come first, and why. This feeds planning and the next-step sugges
 1. **[feature-name]** — [Why it comes first — e.g. foundational, others depend on it, vertical slice that de-risks the rest.]
 2. **[feature-name]** — [What it depends on from the feature(s) above and why it follows.]
 3. **[feature-name]** — [Dependency / ordering rationale.]
+4. **[feature-name]** and **[feature-name]** (parallel, both need the features above) — [Why these two build side by side.]
+
+**Build Order rule:** one numbered item may name two or more features in bold. Those features build side by side. Write the bold only for the features of that item. A feature that an item only needs stays plain text. Each feature name appears in one item only.
 
 **Dependencies between features:**
 - [feature-A] → [feature-B] ([what B needs from A])

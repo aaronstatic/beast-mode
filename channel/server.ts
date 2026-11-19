@@ -42,6 +42,7 @@ import type { Bug } from "./bug-store.ts";
 
 const COMMAND_MAP: Record<string, string> = {
   suggest: "suggest-feature",
+  "suggest-epic": "suggest-epic",
   plan: "plan-feature",
   start: "start-feature",
   continue: "continue-feature",

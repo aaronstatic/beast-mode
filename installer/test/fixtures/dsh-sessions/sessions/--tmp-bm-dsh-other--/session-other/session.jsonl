@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"session-other","createdAt":1758153600000,"cwd":"/tmp/bm-dsh/other","isSeeded":false,"origin":"user","delegationDepth":0,"agentPreset":"standard"}
+{"type":"assistant/message","data":{"turn":1,"step":1,"message":{"source":{"model":"other-model"},"content":[{"type":"text","text":"the log of the other project"}]},"usage":{"inputTokens":9000,"cacheReadTokens":9000,"outputTokens":9000,"totalTokens":27000}}}

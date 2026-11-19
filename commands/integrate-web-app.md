@@ -50,7 +50,7 @@ Stop if missing.
 for d in docs/features/*/; do [ -f "$d/epic-overview.md" ] && basename "$d"; done
 ```
 
-If any epics exist, read `.claude/epic-resolution.md` and apply its epic-detection rules (§1) before proceeding — it is the single source of truth for what counts as an epic and how references into it are formed.
+If any epics exist, read `.beast-mode/epic-resolution.md` and apply its epic-detection rules (§1) before proceeding — it is the single source of truth for what counts as an epic and how references into it are formed.
 
 **Look for a "dev-ops"-like epic.** For each epic found, read its `epic-overview.md` title and opening description. It's a dev-ops-like epic if the folder name or description matches (case-insensitive) any of: `dev-ops`, `devops`, `platform`, `infra`, `infrastructure`, `tooling`, `internal-tools`, `ops`.
 
@@ -217,7 +217,7 @@ Use the real resolved `<ref>` value (e.g. `web-app-integration` or `dev-ops/web-
 ## Epic awareness
 
 This command is epic-aware. Before choosing where to write `requirements.md`,
-read `.claude/epic-resolution.md` and apply its rules: detect epics by
+read `.beast-mode/epic-resolution.md` and apply its rules: detect epics by
 `epic-overview.md`, and — if a dev-ops-like epic exists — place the new
 feature at `<epic>/web-app-integration` per its `<epic>/<feature>` reference
 convention. If no epics exist in `docs/features/`, use a top-level feature

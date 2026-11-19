@@ -2,7 +2,9 @@
 
 Agents are specialized workflows that automate common tasks. They're defined as Markdown files with YAML frontmatter.
 
-**Official Documentation:** https://docs.claude.com/en/docs/claude-code/sub-agents
+**Claude Code reference:** https://docs.claude.com/en/docs/claude-code/sub-agents
+
+A harness that is not Claude Code names its own agent path and its own rule in `.beast-mode/harness.md`. Read that file first.
 
 ---
 
@@ -27,7 +29,7 @@ Can be multiple paragraphs with detailed instructions.
 
 ## Location
 
-Place agents in `.claude/agents/` (project-specific, highest priority)
+Place agents in the harness agents directory (project-specific, highest priority). Read `.beast-mode/harness.md` for the real path. On a harness with no agents directory, the agent file is a flat skill in the harness skills directory.
 
 ---
 
@@ -38,32 +40,32 @@ Place agents in `.claude/agents/` (project-specific, highest priority)
 | `name` | **Yes** | Unique identifier (lowercase, hyphens) |
 | `description` | **Yes** | When to use this agent |
 | `tools` | No | Limit tools available (improves focus) |
-| `model` | No | Override model (sonnet/opus/haiku/inherit) |
-| `effort` | No | Reasoning effort for this agent: `low`, `medium`, `high`, `xhigh`, or `max`. Set by Beast Mode setup/upgrade per the policy below. |
+| `model` | No | The model of this agent. The role sets the value: `sonnet` for a standard dev agent, `opus` for every other Beast Mode role |
+| `effort` | No | The reasoning effort of this agent: `medium`, `high`, or `xhigh`. Beast Mode setup and Beast Mode upgrade write this value from the effort preset below |
 | `color` | No | Status line color. Use: **white** for architects/planners, **blue** for frontend/CLI devs, **green** for backend devs, **red** for reviewers/validators, other colors (yellow, purple, cyan) for remaining agents |
 
 ---
 
 ## Model & Effort Policy
 
-Beast Mode tunes `model` and `effort` by the agent's role. The user picks one of **three effort presets** at `/install-beast-mode` / `/upgrade-beast-mode`; every agent's effort derives from it. With Opus 5, **every agent runs on `opus`** (`sonnet` is retired). The preset sets **MAX** — how hard the high-leverage agents think. Standard dev agents always run at `medium`, because the architectural thinking already lives in the plan.
+Beast Mode tunes `model` and `effort` by the agent's role. The user selects one of **three effort presets** at `/install-beast-mode` or at `/upgrade-beast-mode`. That one preset value sets the effort of every agent. The role sets the model: a standard dev agent runs on `sonnet`, and every other role runs on `opus`.
 
 | Agent role | Model | Effort | Rationale |
 |------------|-------|--------|-----------|
-| **solution-architect** | `opus` | the preset's **MAX** | Architecture is the highest-leverage thinking — do it at full strength so the plan carries the load |
-| **Standard dev agents** (`frontend-dev`, `backend-dev`, `ml-dev`, `dev`, …) | `opus` | `medium` (fixed) | The hard thinking already lives in the plan; implementation runs leaner and cheaper |
-| **Advanced dev agents** (`frontend-dev-advanced`, …) | `opus` | the preset's **MAX** | For major refactors / integration-heavy / high-risk phases — invoked by `/proceed-advanced` or by `/proceed` after asking the user |
-| **Review / evaluation agents** (code review, PR review, `/evaluate-feature`) | `opus` | the preset's **MAX** | A weak reviewer rubber-stamps weak work — reviewing always justifies the strongest setting |
+| **solution-architect** | `opus` | the preset value | Architecture is the highest-leverage thinking. The plan carries the load of the whole feature |
+| **Standard dev agents** (`frontend-dev`, `backend-dev`, `ml-dev`, `dev`, …) | `sonnet` | the preset value | The plan holds the hard thinking. `sonnet` writes the code at a much lower cost |
+| **Advanced dev agents** (`frontend-dev-advanced`, …) | `opus` | the preset value | For a major refactor, an integration-heavy phase, or a high-risk phase. `/proceed-advanced` uses these agents |
+| **Review / evaluation agents** (code review, PR review, `/evaluate-feature`) | `opus` | the preset value | A weak reviewer approves weak work. A review always justifies the strongest model |
 
-**The three presets** (each sets **MAX**; standard dev is always `opus` @ `medium`):
+**The three presets** (one value, every role):
 
-| Preset | **MAX** (`opus` agents) | Standard dev (`opus`) |
-|--------|-------------------------|-----------------------|
-| `Max` (default, recommended) | `max` | `medium` |
-| `High` | `xhigh` | `medium` |
-| `Medium` | `high` | `medium` |
+| Preset | solution-architect | Standard dev | Advanced dev | Review |
+|--------|--------------------|--------------|--------------|--------|
+| `Max` | `opus` @ `xhigh` | `sonnet` @ `xhigh` | `opus` @ `xhigh` | `opus` @ `xhigh` |
+| `High` (default, recommended) | `opus` @ `high` | `sonnet` @ `high` | `opus` @ `high` | `opus` @ `high` |
+| `Medium` | `opus` @ `medium` | `sonnet` @ `medium` | `opus` @ `medium` | `opus` @ `medium` |
 
-**The effort ladder** (low → high): `low` → `medium` → `high` → `xhigh` → `max`. `Max` is the recommended preset for best results, at higher token cost.
+**The effort ladder** (low to high): `medium` → `high` → `xhigh`. `High` is the recommended preset. `Max` gives the strongest results at the highest token cost.
 
 ---
 
@@ -106,7 +108,7 @@ name: solution-architect
 description: Creates technical implementation plans from requirements. Use when starting a new feature or need architectural guidance.
 tools: Read, Glob, Grep, Write, WebSearch
 model: opus
-effort: max
+effort: high
 color: white
 ---
 
@@ -154,12 +156,14 @@ Focus on WHAT to build and WHY, reference skills for HOW.
 name: frontend-dev
 description: Implements React/TypeScript features using dev docs and skills. Use after implementation plan exists.
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: opus
-effort: medium
+model: sonnet
+effort: high
 color: blue
 ---
 
 You are a senior frontend developer implementing features from plans.
+
+Tool rules: apply `.beast-mode/tool-rules.md`, pasted into this prompt by the caller.
 
 ## Prerequisites
 
@@ -169,10 +173,9 @@ You are a senior frontend developer implementing features from plans.
 ## Process
 
 1. **Load Context**
-   - Read `dev/active/[feature]/plan.md`
-   - Read `dev/active/[feature]/context.md`
-   - Read `dev/active/[feature]/tasks.md`
-   - Understand current phase and next steps
+   - Read the phase brief that the caller names.
+   - Read the project instruction file.
+   - Understand the current phase and the next steps.
 
 2. **Follow Best Practices**
    - Use /skill frontend-dev-guidelines for patterns
@@ -201,7 +204,7 @@ You are a senior frontend developer implementing features from plans.
 
 ### Example 2b: frontend-dev-advanced (Heavyweight Implementation)
 
-An **advanced** agent is the same role as its standard counterpart, but on `model: opus` at the maximum effort level — reserved for major refactors, integration-heavy phases, and high-risk work. Beast Mode creates one `*-advanced` variant per standard dev agent. `/proceed-advanced` always uses these; `/proceed` uses them after asking the user.
+An **advanced** agent is the same role as its standard counterpart, but it runs on `opus` in place of `sonnet`. Use it for a major refactor, for an integration-heavy phase, and for high-risk work. Beast Mode creates one `*-advanced` variant for each standard dev agent. `/proceed-advanced` always uses these agents. `/proceed` uses them after it asks the user.
 
 ```markdown
 ---
@@ -209,21 +212,23 @@ name: frontend-dev-advanced
 description: Heavyweight frontend implementation for major refactors, integration-heavy, or high-risk phases. Used by /proceed-advanced, or by /proceed after the user opts in.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: opus
-effort: max
+effort: high
 color: blue
 ---
 
 You are a principal frontend engineer taking on the hardest implementation work — major
 refactors, changes that cross many integration points, and anything expensive to get wrong.
 
+Tool rules: apply `.beast-mode/tool-rules.md`, pasted into this prompt by the caller.
+
 Same process and skills as `frontend-dev`, but:
 - Trace every integration point before changing shared code; enumerate the blast radius
 - Prefer incremental, verifiable steps; run type-check/tests between them
 - Call out migration risks and follow-ups in context.md
-- You run at maximum effort — use it: reason through edge cases the plan didn't anticipate
+- You run on the strongest model. Examine every edge case that the plan does not name
 ```
 
-> The `effort` value mirrors the MAX chosen at setup. The standard `frontend-dev` runs on opus at `medium` effort; this advanced variant runs on opus at MAX.
+> The `effort` value comes from the preset of the setup. The standard `frontend-dev` runs on `sonnet`. This advanced variant runs on `opus`. Both agents use the same effort value.
 
 ### Example 3: code-reviewer (Quality Assurance)
 
@@ -233,7 +238,7 @@ name: code-reviewer
 description: Reviews code for quality, security, and maintainability. Use PROACTIVELY after completing significant code changes.
 tools: Read, Grep, Glob, Bash
 model: opus
-effort: max
+effort: high
 color: red
 ---
 
@@ -289,7 +294,7 @@ name: error-debugger
 description: Systematically debugs TypeScript/runtime errors. Use when encountering errors.
 tools: Read, Grep, Bash, Edit
 model: opus
-effort: medium
+effort: high
 color: yellow
 ---
 
@@ -368,14 +373,15 @@ Common agents:
 
 When creating a new agent:
 
-- [ ] Create file in `.claude/agents/[name].md`
+- [ ] Create the file `[name].md` in the harness agents directory
 - [ ] Add YAML frontmatter with required fields
   - [ ] `name` - lowercase with hyphens
   - [ ] `description` - clear, natural language
   - [ ] `color` - white (planner), blue (frontend), green (backend), red (reviewer), or other
   - [ ] `tools` - only what's needed (optional)
-  - [ ] `model` - per the Model & Effort Policy (all Beast Mode agents → `opus`; roles differ only by effort)
-  - [ ] `effort` - per the Model & Effort Policy (opus agents → preset's MAX; standard dev → `high`)
+  - [ ] `model` - per the Model & Effort Policy (a standard dev agent → `sonnet`, every other role → `opus`)
+  - [ ] `effort` - per the Model & Effort Policy (every agent → the preset value of the project)
+- [ ] Name `.beast-mode/tool-rules.md` in the prompt body
 - [ ] Write detailed system prompt
   - [ ] Clear role definition
   - [ ] Step-by-step process

@@ -85,46 +85,121 @@ If the user corrects the detection, update your understanding accordingly.
 
 ### Step 4: Install Universal Templates
 
-Run the installation script to copy all templates and set up directory structure:
+Run the installer CLI to copy all templates and set up directory structure:
 
 **Command:**
 ```bash
-bash ${CLAUDE_PLUGIN_ROOT}/scripts/install-templates.sh
+node --version
+node ${CLAUDE_PLUGIN_ROOT}/installer/bin/beast-mode.js install claude
 ```
 
+**If `node --version` fails,** the machine has no Node.js. Show this message and stop the installation. Copy no file by hand:
+
+```
+❌ Beast Mode cannot install: Node.js is missing.
+
+The Beast Mode installer runs on Node.js 20 or later.
+Install Node.js from https://nodejs.org, then run
+/install-beast-mode again.
+```
+
+The CLI itself checks the Node.js version. When it finds an older Node.js than 20, it exits 2 with a cause and a fix line naming https://nodejs.org. Show those lines and stop.
+
 **What it does:**
-1. Creates directory structure (`.claude/`, `.claude/templates/`, `docs/features/`)
-2. Copies slash commands to `.claude/commands/`
-3. Copies feature doc templates to `.claude/templates/`
-4. Copies format references to `.claude/`
-5. Updates `.gitignore` with Beast Mode entries
-6. Writes version file (`.claude/.beast-mode-version`)
+1. Creates the directory structure (`.claude/skills/`, `.claude/agents/`, `.beast-mode/`, `.beast-mode/templates/`, `docs/features/`)
+2. Copies every command skill to `.claude/skills/<name>/SKILL.md`, one folder per command
+3. Copies the shipped agents to `.claude/agents/`
+4. Copies the feature doc templates to `.beast-mode/templates/`
+5. Copies the format references to `.beast-mode/`
+6. Composes the harness glossary from every installed harness, into `.beast-mode/harness.md`
+7. Updates `.gitignore` with the Beast Mode backup line and the `.beast-mode/briefs/` line
+8. Writes the version file (`.claude/.beast-mode-version`)
+9. Writes the manifest (`.claude/.beast-mode-manifest.json`)
+10. Writes the harness-set marker (`.beast-mode/version.json`)
 
-The script is safe - it won't overwrite existing files without confirmation and creates backups when needed.
+`.claude/` holds the files that Claude Code reads. `.beast-mode/` holds the shared files that every harness reads, so the project commits that directory.
 
-**Alternative (if script fails):**
-Manually copy files from `${CLAUDE_PLUGIN_ROOT}/templates/` to project using the Bash tool with `cp` commands.
+The CLI is safe. It skips a file that already exists, and it writes no `.claude/commands/`. It overwrites `.beast-mode/harness.md` only, because Beast Mode owns that file. It writes the manifest last, and that file records the sha256 of every file the CLI wrote, so `/upgrade-beast-mode` knows which files Beast Mode owns.
+
+Show the CLI output to the user. A successful run ends with this banner:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ TEMPLATES INSTALLED!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Installed:
+  ✓ 31 command skills (.claude/skills/)
+  ✓ 2 agent templates (.claude/agents/)
+  ✓ 7 feature doc templates (.beast-mode/templates/)
+  ✓ 8 format references (.beast-mode/)
+  ✓ Harness glossary (.beast-mode/harness.md)
+  ✓ Directory structure (docs/features/)
+  ✓ Updated .gitignore
+  ✓ Version file (v5.4.0)
+  ✓ Manifest (.claude/.beast-mode-manifest.json)
+```
+
+**The stale-install warning.** The CLI compares every other harness this project holds against the plugin version, and prints a warning after a real install:
+
+```
+⚠ 1 other harness in this project is behind the plugin version:
+    dsh (.agents/) holds v5.3.0. The plugin ships v5.4.0.
+ℹ Run `beast-mode upgrade` to upgrade every installed harness in this project.
+```
+
+Show the warning and name the other harness. This install still only writes `.claude/`. Offer `beast-mode upgrade` (no harness) as an optional extra step, for the user to run later.
+
+**If the CLI exits non-zero,** it prints three lines: what failed, why it failed, and what to do next. Show those three lines, then take the action for the exit code:
+
+| Exit | Meaning | Action |
+|------|---------|--------|
+| 1 | Source invalid. A plugin template failed validation | Show the file and the rule the CLI names. Reinstall the plugin, then run `/install-beast-mode` again |
+| 2 | Usage error. A bad argument reached the CLI | Show the line. This is a defect in this command, so report it and stop |
+| 3 | Unknown harness. The plugin ships no `claude` adapter | Reinstall the plugin, then run `/install-beast-mode` again |
+| 4 | Guard refusal. A Beast Mode path is a symlink, or the project is the Beast Mode plugin repo | Show the paths the CLI names and stop. Never work around a guard |
+| 5 | Manifest conflict. `.claude/.beast-mode-manifest.json` is unreadable | Ask the user to move that file aside, then run `/install-beast-mode` again |
+| 6 | Write failure. A permission error, a full disk, or a destination that is a directory | Show the path, ask the user to fix it, then run `/install-beast-mode` again |
+| 7 | Install refused. The project already holds a manifest | Take the branch below |
+
+**If the CLI exits 7,** the project already has Beast Mode. The CLI prints:
+
+```
+✗ This project already holds a Beast Mode installation for this harness.
+A manifest already exists at ".claude/.beast-mode-manifest.json".
+Run "beast-mode upgrade" instead of "beast-mode install".
+```
+
+Stop the installation here. Show this message and let the user choose:
+
+```
+ℹ️  Beast Mode is already installed in this project.
+
+Run /upgrade-beast-mode to move it to the current
+plugin version. The upgrade keeps every file you
+edited and backs up every file it replaces.
+```
 
 ---
 
 ### Step 4b: Choose Agent Effort Preset
 
-Beast Mode tunes each agent's `model` and reasoning `effort` by role. Rather than a per-agent ladder, offer **three presets** (tuned against the latest DeepSWE benchmark results). With Opus 5, every agent runs on `opus`; standard dev agents always run at `medium` effort — the plan carries the architectural thinking, so extra effort there buys little. The presets differ only in how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. Explain it briefly:
+Beast Mode tunes each agent's `model` and reasoning `effort` by role. Offer **three presets**. One preset value sets the effort of every agent. The role sets the model: a standard dev agent runs on `sonnet`, and every other agent runs on `opus`. Explain it briefly:
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 AGENT EFFORT PRESET
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Standard dev agents always run on opus @ medium effort
-(the plan already carries the thinking). Pick how hard
-the high-leverage agents think:
+One preset sets the effort of every agent. The role sets
+the model: a standard dev agent runs on sonnet, and every
+other agent runs on opus.
 
-  Preset   solution-architect / advanced dev / review
-  ───────  ───────────────────────────────────────────
-  Max      opus @ max      ← default, best results
-  High     opus @ xhigh
-  Medium   opus @ high     ← leanest token use
+  Preset   Effort of every agent
+  ───────  ────────────────────────────────────
+  Max      xhigh    ← strongest results
+  High     high     ← default, recommended
+  Medium   medium   ← leanest token use
 
 Higher effort = better results, more tokens.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -132,30 +207,32 @@ Higher effort = better results, more tokens.
 
 **Ask for the preset.** Use `AskUserQuestion`:
 
-- **Question:** "Which agent effort preset? This sets how hard the high-leverage agents (solution-architect, advanced dev, reviewers) think. Standard dev agents always run on opus @ medium."
+- **Question:** "Which agent effort preset? This sets the effort of every agent. A standard dev agent runs on sonnet, and every other agent runs on opus."
 - **Header:** "Effort preset"
 - **Options:**
-  1. `Max` — "opus @ max for high-leverage agents. Best results. **Recommended.**" *(recommended/first)*
-  2. `High` — "opus @ xhigh. Strong results, somewhat leaner on tokens."
-  3. `Medium` — "opus @ high. Leanest token use."
+  1. `High` — "Every agent at high effort. Strong results at a moderate token cost. **Recommended.**" *(recommended/first)*
+  2. `Max` — "Every agent at xhigh effort. The strongest results, at the highest token cost."
+  3. `Medium` — "Every agent at medium effort. The leanest token use."
 
-From the chosen preset, derive the two effort values used in Step 5 — **MAX** (the high-leverage agents: solution-architect, advanced dev, reviewers) and **DEV** (the standard dev agents, always `medium`). Every agent runs on `opus`:
+From the chosen preset, derive `<EFFORT>` — the one effort value that Step 5 writes into every agent. The role sets the model:
 
-| Preset | **MAX** (`opus`) | **DEV** (`opus`) |
-|--------|------------------|------------------|
-| `Max` (default) | `max` | `medium` |
-| `High` | `xhigh` | `medium` |
-| `Medium` | `high` | `medium` |
+| Preset | solution-architect | Standard dev | Advanced dev | Review |
+|--------|--------------------|--------------|--------------|--------|
+| `Max` | `opus` @ `xhigh` | `sonnet` @ `xhigh` | `opus` @ `xhigh` | `opus` @ `xhigh` |
+| `High` (default, recommended) | `opus` @ `high` | `sonnet` @ `high` | `opus` @ `high` | `opus` @ `high` |
+| `Medium` | `opus` @ `medium` | `sonnet` @ `medium` | `opus` @ `medium` | `opus` @ `medium` |
 
-Remember the chosen preset's **MAX** and **DEV** values — you'll write them into agent frontmatter in Step 5.
+Remember the chosen `<EFFORT>` value. Step 5 writes it into the frontmatter of every agent.
 
 ---
 
 ### Step 5: Create Dev Agents
 
-Based on the tech stack detected in Step 2, create project-specific dev agents in `.claude/agents/`. The solution-architect agent was already copied from templates — now tune it and create the dev agents (standard + advanced) tailored to this project, using the **MAX** and **DEV** effort levels chosen in Step 4b.
+Based on the tech stack detected in Step 2, create project-specific dev agents in `.claude/agents/`. The solution-architect agent was already copied from templates — now tune it and create the dev agents (standard + advanced) tailored to this project, using the `<EFFORT>` value chosen in Step 4b.
 
-**First, tune the solution-architect** (`.claude/agents/solution-architect.md`, already copied): ensure `model: opus` and set `effort: <MAX>` in its frontmatter (edit the `effort:` line to match the user's choice).
+**First, tune the solution-architect** (`.claude/agents/solution-architect.md`, already copied): ensure `model: opus` and set `effort: <EFFORT>` in its frontmatter (edit the `effort:` line to match the user's choice).
+
+The install also copied `.claude/agents/feature-orchestrator.md`. Step 5 does not tune it, because its `model` and `effort` are fixed.
 
 **Read the agent structure guide first:**
 ```
@@ -172,8 +249,8 @@ Read file: ${CLAUDE_PLUGIN_ROOT}/templates/formats/agent-structure-example.md
 
 **Create TWO tiers for each detected domain:**
 
-1. **Standard dev agent** — `model: opus`, `effort: <DEV>` (`medium`). The everyday workhorse.
-2. **Advanced dev agent** — same `name` with an `-advanced` suffix, `model: opus`, `effort: <MAX>`. For major refactors, integration-heavy, or high-risk phases. Invoked by `/proceed-advanced`, or by `/proceed` after the user opts in.
+1. **Standard dev agent** — `model: sonnet`, `effort: <EFFORT>`. The everyday workhorse.
+2. **Advanced dev agent** — same `name` with an `-advanced` suffix, `model: opus`, `effort: <EFFORT>`. For major refactors, integration-heavy, or high-risk phases. Invoked by `/proceed-advanced`, or by `/proceed` after the user opts in.
 
 So a full-stack project gets four dev agents: `frontend-dev`, `frontend-dev-advanced`, `backend-dev`, `backend-dev-advanced`.
 
@@ -195,8 +272,8 @@ So a full-stack project gets four dev agents: `frontend-dev`, `frontend-dev-adva
 name: frontend-dev
 description: Implements <domain> features from the plan. Use after an implementation plan exists.
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: opus
-effort: <DEV>        # standard dev = medium
+model: sonnet
+effort: <EFFORT>     # the value chosen in Step 4b
 color: blue
 ---
 ```
@@ -208,30 +285,32 @@ name: frontend-dev-advanced
 description: Heavyweight <domain> implementation for major refactors, integration-heavy, or high-risk phases. Used by /proceed-advanced, or by /proceed when the user opts in.
 tools: Read, Write, Edit, Bash, Glob, Grep
 model: opus
-effort: <MAX>        # the value chosen in Step 4b
+effort: <EFFORT>     # the same value, on the stronger model
 color: blue
 ---
 ```
 
 **Agent system prompt pattern** (applies to both tiers):
 1. **Role** — "You are a senior [domain] developer implementing features from plans." (Advanced: "principal [domain] engineer taking on the hardest work — major refactors and high-risk, integration-heavy phases.")
-2. **Process** — Load context from feature docs, follow implementation plan, update tasks.md
+2. **Process** — Read the phase brief that the caller names. Read the project instruction file. Follow the plan, and update tasks.md
 3. **Tech-specific guidance** — Mention the frameworks/libraries detected (e.g., "Use React hooks, TypeScript strict mode, Tailwind for styling")
 4. **Quality standards** — Type-check after changes, follow existing patterns, reference skills
 5. **Important rules** — Always update dev docs, ask questions if plan is unclear, focus on clean code
-6. **Advanced agents only** — add: trace every integration point before touching shared code, prefer incremental verifiable steps, call out migration risks; "you run at maximum effort — use it on the edge cases the plan didn't anticipate."
+6. **Advanced agents only** — add: trace every integration point before touching shared code, prefer incremental verifiable steps, call out migration risks; "you run on the strongest model — use it on the edge cases the plan did not name."
+7. **Tool rules** — Name `.beast-mode/tool-rules.md`. The caller pastes its rules into this prompt.
 
-The standard and advanced agents for a domain share the same system prompt body; both run on `opus`, so only the frontmatter (`name`, `effort`, `description`) and the extra "advanced" rules differ.
+The standard and advanced agents for a domain share the same system prompt body, and both carry the same `effort`. Only the frontmatter (`name`, `model`, `description`) and the extra "advanced" rules differ.
 
 **Show the user what was created:**
 ```
-Created dev agents (effort: standard=<DEV>, advanced=<MAX>):
-  - .claude/agents/frontend-dev.md           (opus, blue)
+Created dev agents (preset: <Preset>, effort: <EFFORT>):
+  - .claude/agents/frontend-dev.md           (sonnet, blue)
   - .claude/agents/frontend-dev-advanced.md  (opus, blue)
-  - .claude/agents/backend-dev.md            (opus, green)
+  - .claude/agents/backend-dev.md            (sonnet, green)
   - .claude/agents/backend-dev-advanced.md   (opus, green)
 Tuned:
-  - .claude/agents/solution-architect.md     (opus, effort=<MAX>)
+  - .claude/agents/solution-architect.md     (opus, effort=<EFFORT>)
+  - .claude/agents/feature-orchestrator.md   (opus, effort=xhigh, fixed)
 ```
 
 ---
@@ -337,9 +416,9 @@ docs for each feature found.
      retrospective documentation.
      ```
    - Ask user to confirm the list (they can remove or add entries)
-   - **IMPORTANT:** Do NOT use the Skill tool to run `/discover-feature` — the newly copied slash commands won't be visible until Claude restarts. Instead, read the discover-feature template directly from the plugin:
+   - **IMPORTANT:** Do NOT use the Skill tool to run `/discover-feature` — the newly copied command skills are not visible until Claude restarts. Instead, read the discover-feature skill directly from the plugin:
      ```
-     Read file: ${CLAUDE_PLUGIN_ROOT}/templates/slash-commands/discover-feature.md
+     Read file: ${CLAUDE_PLUGIN_ROOT}/templates/skills/discover-feature/SKILL.md
      ```
    - Follow the instructions in that template inline for each confirmed feature, with `$ARGUMENTS` set to the feature name
    - For each discovery, follow the template's own user interaction flow
@@ -373,9 +452,9 @@ for development.
    - Options: "Yes, plan project setup" / "No, I'll start on my own"
 
 2. **If yes:**
-   - **IMPORTANT:** Do NOT use the Skill tool to run `/plan-feature` — the newly copied slash commands won't be visible until Claude restarts. Instead, read the plan-feature template directly from the plugin:
+   - **IMPORTANT:** Do NOT use the Skill tool to run `/plan-feature` — the newly copied command skills are not visible until Claude restarts. Instead, read the plan-feature skill directly from the plugin:
      ```
-     Read file: ${CLAUDE_PLUGIN_ROOT}/templates/slash-commands/plan-feature.md
+     Read file: ${CLAUDE_PLUGIN_ROOT}/templates/skills/plan-feature/SKILL.md
      ```
    - Follow the instructions in that template inline, with `$ARGUMENTS` set to `project-setup`
    - This will gather requirements and create an implementation plan for the project scaffolding
@@ -396,27 +475,67 @@ BEAST MODE INSTALLED!
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 What was installed:
-  - Slash commands (.claude/commands/)
-  - Agents (.claude/agents/) [solution-architect (opus) + standard dev (opus, medium) + advanced dev (opus, max)]
-  - Feature doc templates (.claude/templates/)
-  - Format references (.claude/)
+  - Command skills (.claude/skills/)
+  - Agents (.claude/agents/) [solution-architect (opus) + feature-orchestrator (opus, xhigh, fixed) + standard dev (sonnet) + advanced dev (opus); every other agent at <EFFORT> effort]
+  - Feature doc templates (.beast-mode/templates/)
+  - Format references (.beast-mode/)
+  - Harness glossary (.beast-mode/harness.md)
   - Directory structure (docs/features/)
   - Mission statement (docs/mission-statement.md)
   - Technical design (docs/technical-design.md)
   - Version tracking (.claude/.beast-mode-version)
+  - Install manifest (.claude/.beast-mode-manifest.json)
+  - Harness-set marker (.beast-mode/version.json)
+
+Commit .beast-mode/ with the project. Every harness reads it.
 
 You're ready to start developing! Try:
   /plan-feature <feature-name>
   /discover-feature <feature-name>
+  /token-report
+  /review-session
 
 To group related features into an epic:
   /create-epic <name> <prompt>    — migrate existing prefixed features
+  /suggest-epic                   — suggest the next epic to build
   /plan-epic <name> [prompt]      — plan a new epic from scratch
   /update-epic [name]             — refresh epic status + master rollup
   /review-epic <name>             — cross-feature architecture review
+  /autorun-epic <name>            — build every feature of an epic to completion
+
+To run a feature or an epic in Orca (needs the Orca CLI):
+  /orca-setup                     — choose the agent for each stage, add custom steps
+  /orca-feature <name>            — build one feature with Orca agent tabs
+  /orca-epic <name>               — build every feature of an epic with Orca agent tabs
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
+
+---
+
+### Step 9: Offer Orca Setup
+
+Run this step last, after the summary. It checks for the Orca CLI.
+
+1. Run the detect step with `Bash`:
+   ```
+   node ${CLAUDE_PLUGIN_ROOT}/installer/bin/beast-mode.js orca detect
+   ```
+   It prints one JSON object. Read the `offer` key.
+
+2. **If `"offer"` is `"none"`:** show nothing and end the command. The Orca CLI is absent, or `orca.json` already holds a valid `orchestration` object.
+
+3. **If `"offer"` is `"setup"`:** use `AskUserQuestion`: "The Orca CLI is installed. Set up Orca orchestration now?"
+   - Options: "Set it up now (recommended)" / "Later"
+
+4. **If now:**
+   - **IMPORTANT:** Do NOT use the Skill tool to run `/orca-setup`. The newly copied command skills are not visible until Claude restarts (the same rule as Step 7). Read the skill directly from the plugin:
+     ```
+     Read file: ${CLAUDE_PLUGIN_ROOT}/templates/skills/orca-setup/SKILL.md
+     ```
+   - Follow the instructions in that template inline.
+
+5. **If later:** tell the user they can run `/orca-setup` after Claude Code restarts (e.g. `claude -c`).
 
 ---
 
@@ -439,13 +558,17 @@ To group related features into an epic:
    - Show confidence level in detection
    - Let user correct if wrong
 
-4. **Mission Statement & Technical Design:**
+4. **The project instruction file:**
+   - The install writes no `CLAUDE.md` and no `AGENTS.md`
+   - Put shared project guidance in `AGENTS.md` at the project root. Add one line to `CLAUDE.md`: `@AGENTS.md`. Claude Code expands that import. dsh reads both files and drops a byte-identical duplicate, so the guidance stays in one place and the second file stays one line long
+
+5. **Mission Statement & Technical Design:**
    - These must feel project-specific, not boilerplate
    - For existing projects, derive as much as possible from the code before asking questions
    - For new projects, ask focused questions and generate opinionated docs
    - Always let the user review and adjust before proceeding
 
-5. **Communication:**
+6. **Communication:**
    - Use clear formatting (boxes, sections)
    - Show progress at each step
    - Be concise
@@ -459,19 +582,21 @@ This command should:
 2. Use the `Glob` tool to find package.json, requirements.txt, etc.
 3. Use the `AskUserQuestion` tool for structured choices
 4. Use the `Write` tool to create the mission statement and technical design
-5. Use the `Bash` tool to copy template files from plugin directory
+5. Use the `Bash` tool to run the installer CLI (`${CLAUDE_PLUGIN_ROOT}/installer/bin/beast-mode.js`), which copies every template file
 6. Use the `Skill` tool to run `/discover-feature` or `/plan-feature` at the end
 7. Use the `Edit` tool to update .gitignore if it exists
 
 The plugin root is available via: `${CLAUDE_PLUGIN_ROOT}`
 
 Template files are located at:
-- `${CLAUDE_PLUGIN_ROOT}/templates/slash-commands/`
+- `${CLAUDE_PLUGIN_ROOT}/templates/skills/`
+- `${CLAUDE_PLUGIN_ROOT}/templates/agents/`
 - `${CLAUDE_PLUGIN_ROOT}/templates/dev-docs/`
 - `${CLAUDE_PLUGIN_ROOT}/templates/formats/`
+- `${CLAUDE_PLUGIN_ROOT}/templates/harness/`
 
 ---
 
 **Remember:** This installation gets the user productive immediately with slash commands, agents, and dev docs. Skills are added later as features are completed (via `/document-feature`) and load natively from each skill's `SKILL.md` `description`.
 
-**Version Tracking:** The install script writes the plugin version to `.claude/.beast-mode-version` so `/upgrade-beast-mode` knows you're on the latest version.
+**Version Tracking:** The installer CLI writes the plugin version to `.claude/.beast-mode-version` so `/upgrade-beast-mode` knows you're on the latest version. It also writes `.claude/.beast-mode-manifest.json`, which records every file it installed and that file's hash.

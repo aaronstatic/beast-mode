@@ -13,6 +13,18 @@ export const ConfigSchema = z.object({
   pathMappings: z.record(z.string(), z.string()).default({}), // project name → local path override
   apiKeys: z.array(z.string().min(1)).default([]),
   statusChannelId: z.string().optional(),
+  // Other Beast Mode backends to federate with (see @beast-mode/web/backend's
+  // `withRemotes`/D9) — additive, so an existing config.json with no `remotes`
+  // key keeps loading and behaving exactly as before.
+  remotes: z
+    .array(
+      z.object({
+        name: z.string().min(1),
+        url: z.string().url(),
+        token: z.string().min(1).optional(),
+      })
+    )
+    .default([]),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

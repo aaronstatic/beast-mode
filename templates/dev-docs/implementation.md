@@ -26,9 +26,9 @@
 ## User Personas Alignment
 
 **Target Users:** [Which user types from `docs/user-personas.md`]
-- [ ] **Creators** (Building webpages/scenes/apps)
-- [ ] **Managers** (Device/network management)
-- [ ] **Both**
+- [ ] **[Persona 1]** ([What this persona does])
+- [ ] **[Persona 2]** ([What this persona does])
+- [ ] **All Personas**
 
 **User Subsets Served:**
 - [ ] **Complex** - Need granular controls and advanced options
@@ -73,15 +73,19 @@
 
 ## Implementation Phases
 
-### Phase 1: [Phase Name] (Foundation)
-**Goal:** [What this phase accomplishes]
+Each phase is a slice: one narrow path that works end to end, with a demo line that a person can test. Section 11 of `.beast-mode/phase-handoff.md` holds the rules. A feature under about 8 tasks stays one phase.
+
+### Phase 1: [Slice Name]
+**Goal:** [The smallest path that proves the idea]
+**Demo:** [One action and one result that a person can check, for example "the user opens the list and sees one row"]
+**Needs:** none
 
 **Tasks:**
 - [ ] Task 1 - [Description]
 - [ ] Task 2 - [Description]
 - [ ] Task 3 - [Description]
 
-**Estimated Time:** X hours/days
+**Estimated Steps:** X (about six steps for one task)
 
 **Acceptance Criteria:**
 - [ ] Criterion 1
@@ -89,15 +93,17 @@
 
 ---
 
-### Phase 2: [Phase Name] (Core Features)
-**Goal:** [What this phase accomplishes]
+### Phase 2: [Slice Name]
+**Goal:** [The next path in the order of value, or the validation and polish of an earlier path]
+**Demo:** [One action and one result that a person can check]
+**Needs:** Phase 1
 
 **Tasks:**
 - [ ] Task 1 - [Description]
 - [ ] Task 2 - [Description]
 - [ ] Task 3 - [Description]
 
-**Estimated Time:** X hours/days
+**Estimated Steps:** X (about six steps for one task)
 
 **Acceptance Criteria:**
 - [ ] Criterion 1
@@ -105,15 +111,17 @@
 
 ---
 
-### Phase 3: [Phase Name] (Polish & Testing)
-**Goal:** [What this phase accomplishes]
+### Phase 3: [Base Phase Name] (Base)
+**Goal:** [Work that cannot be a slice, for example a data migration or a pure refactor. Delete this phase when the plan has no base phase]
+**Demo:** none (base phase: [the reason that this phase cannot be a slice])
+**Needs:** Phase 1
 
 **Tasks:**
 - [ ] Task 1 - [Description]
 - [ ] Task 2 - [Description]
 - [ ] Task 3 - [Description]
 
-**Estimated Time:** X hours/days
+**Estimated Steps:** X (about six steps for one task)
 
 **Acceptance Criteria:**
 - [ ] Criterion 1
@@ -201,7 +209,6 @@ These are the feature-level acceptance criteria that must ALL pass for this feat
 ## Related Documentation
 
 - **User Personas:** `docs/user-personas.md` (stakeholder-approved user types)
-- **PRD:** `docs/features/[feature-name]/prd.md`
 - **Original Implementation:** `docs/features/[feature-name]/implementation.md`
 - **API Docs:** [Link if applicable]
 

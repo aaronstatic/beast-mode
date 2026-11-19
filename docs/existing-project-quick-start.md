@@ -62,9 +62,12 @@ After running `/install-beast-mode`, your project has these new folders:
 ```
 your-project/
   .claude/
-    commands/          # Slash commands (the workflows)
-    skills/            # Knowledge base for your tech stack
+    skills/            # The command skills (the workflows) + your knowledge base
     agents/            # Specialized AI agents for tasks
+  .beast-mode/
+    templates/         # Doc templates
+    harness.md         # The harness glossary
+    version.json       # The installed harness set
   docs/
     features/          # One folder per feature (the important part!)
       feature-name/
@@ -72,7 +75,6 @@ your-project/
         context.md          # Decisions, key files, current state
         tasks.md            # Task checklist with progress %
     overview.md        # Master overview of ALL features
-    templates/         # Doc templates
 ```
 
 The `docs/features/` folder is where the magic happens. Each feature gets three files that track everything about it.
@@ -242,7 +244,7 @@ Or with a description:
 
 Claude will:
 
-1. Ask you clarifying questions about what you want
+1. Ask you numbered questions with a recommended answer, then list its assumptions for you to confirm
 2. Propose 2-3 different approaches with trade-offs
 3. Create a detailed implementation plan after you pick an approach
 4. Ask you to review and approve the plan
@@ -379,6 +381,7 @@ Without a feature name, `/fix-feature` processes all open bugs across the projec
 | `/fix-bug <id>` | Bug fix | Fixes a specific bug by ID with feature context. |
 | `/fix-feature [name]` | Batch bug fix | Fixes all open bugs for a feature (or all bugs). |
 | `/create-epic <name>` | Group features | Creates a new epic to group related features together. |
+| `/suggest-epic` | Need epic ideas | Suggests 2-4 epics to build next based on project state. |
 | `/plan-epic <name>` | Plan epic | Plans all features inside an epic and sets the build order. |
 | `/update-epic <name>` | Epic progress | Updates epic overview with current status across all child features. |
 | `/review-epic <name>` | Epic review | Reviews all features in an epic for integration and completeness. |

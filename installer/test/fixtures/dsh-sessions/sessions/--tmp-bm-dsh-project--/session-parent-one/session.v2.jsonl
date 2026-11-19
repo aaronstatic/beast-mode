@@ -1,0 +1,2 @@
+{"type":"session","version":2,"id":"session-parent-one","createdAt":1758153600000,"cwd":"/tmp/bm-dsh/project","isSeeded":false,"origin":"user","delegationDepth":0,"agentPreset":"standard"}
+{"type":"assistant/message","data":{"turn":1,"step":1,"message":{"source":{"model":"wrong-pick"},"content":[{"type":"text","text":"the older generation of this session"}]},"usage":{"inputTokens":999,"cacheReadTokens":9990,"outputTokens":99,"totalTokens":10989}}}

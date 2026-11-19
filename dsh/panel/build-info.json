@@ -1,0 +1,10 @@
+{
+  "beastModeVersion": "6.2.2",
+  "webVersion": "0.0.1",
+  "built": "2026-11-19T13:23:58.283Z",
+  "artifacts": {
+    "api.js": 219591,
+    "spa": 1430912,
+    "client.js": 14817
+  }
+}

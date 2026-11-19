@@ -5,45 +5,54 @@
 
 ---
 
-## Phase 1: [Phase Name] (0/5 complete)
+## Phase 1: [Slice Name] (0/5 complete)
+
+**Demo:** [The Demo line of Phase 1 in implementation.md]
+**Needs:** none
 
 - [ ] **Task 1 Title**
   - Description: [What needs to be done]
   - File(s): `src/path/to/file.ts`
-  - Estimate: X hours
+  - Estimate: X steps
 
 - [ ] **Task 2 Title**
   - Description: [What needs to be done]
   - File(s): `src/path/to/file.ts`
-  - Estimate: X hours
+  - Estimate: X steps
 
 - [ ] **Task 3 Title**
   - Description: [What needs to be done]
   - File(s): `src/path/to/file.tsx`
-  - Estimate: X hours
+  - Estimate: X steps
 
 ---
 
-## Phase 2: [Phase Name] (0/7 complete)
+## Phase 2: [Slice Name] (0/7 complete)
+
+**Demo:** [The Demo line of Phase 2 in implementation.md]
+**Needs:** Phase 1
 
 - [ ] **Task 1 Title**
   - Description: [What needs to be done]
   - File(s): `src/path/to/file.ts`
-  - Estimate: X hours
+  - Estimate: X steps
 
 - [ ] **Task 2 Title**
   - Description: [What needs to be done]
   - File(s): `src/path/to/file.tsx`
-  - Estimate: X hours
+  - Estimate: X steps
 
 ---
 
-## Phase 3: [Phase Name] (0/8 complete)
+## Phase 3: [Base Phase Name] (Base) (0/8 complete)
+
+**Demo:** none (base phase: [the reason])
+**Needs:** Phase 1
 
 - [ ] **Task 1 Title**
   - Description: [What needs to be done]
   - File(s): `src/path/to/file.ts`
-  - Estimate: X hours
+  - Estimate: X steps
 
 ---
 
@@ -127,9 +136,10 @@
 ## Notes
 
 ### Task Estimation
-- 🟢 Small (< 1 hour)
-- 🟡 Medium (1-3 hours)
-- 🔴 Large (> 3 hours)
+One step is one tool call of an agent. A typical task costs about six steps (see `.beast-mode/phase-handoff.md` section 1).
+- 🟢 Small (up to 6 steps)
+- 🟡 Medium (7 to 15 steps)
+- 🔴 Large (more than 15 steps, so split the task)
 
 ### Priority Guidelines
 - **High:** Critical for feature to work

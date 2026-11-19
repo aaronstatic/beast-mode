@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"sub-one","createdAt":1758153660000,"cwd":"/tmp/bm-dsh/project","parentSession":{"id":"session-parent-one"},"isSeeded":false,"origin":"subagent","delegationDepth":1,"agentPreset":"standard"}
+{"type":"turn/start","data":{"turn":1}}
+{"type":"assistant/message","data":{"turn":1,"step":1,"message":{"source":{"model":"qwen3.8-flash"},"content":[{"type":"text","text":"the first step of the subagent"}]},"usage":{"inputTokens":50,"cacheReadTokens":500,"outputTokens":10,"totalTokens":560}}}
+{"type":"assistant/message","data":{"turn":1,"step":2,"message":{"source":{"model":"glm-5.3"},"content":[{"type":"text","text":"the last step of the subagent"}]},"usage":{"inputTokens":60,"cacheReadTokens":600,"outputTokens":20,"totalTokens":680}}}

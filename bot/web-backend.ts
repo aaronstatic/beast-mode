@@ -60,5 +60,9 @@ export function createBotBackend(config: Config): BeastBackendHandle {
 
   return createBeastBackend({
     context: { projects, logger: botLog },
+    // `createBeastBackend` runs `normalizeRemotes` itself and drops+warns on
+    // any invalid entry (via `context.logger`), so an optional/malformed
+    // remote can never stop the bot's live Discord link from starting.
+    remotes: config.remotes,
   });
 }

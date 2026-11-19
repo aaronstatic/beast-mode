@@ -6,6 +6,340 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+## [6.2.2] - 2026-11-19
+
+Patch release. No migration script. `beast-mode upgrade` updates nothing on disk; the fix is in the installer CLI.
+
+### Fixed
+
+- **A worker spec is found on WSL2.** On WSL2, `beast-mode orca` passes `--spec-file` to the Windows Orca app in Windows form: `\\wsl.localhost\<distro>\...`, or a drive letter for `/mnt/<drive>/...`. The Windows app could not read the Linux path, so it did not find the worker spec. A call to `orca-dev` keeps the Linux path. Thanks to @FACTERINVURT (PR #11, issue #10).
+
+## [6.2.1] - 2026-11-19
+
+Patch release. No migration script. `beast-mode upgrade` updates the orca skills and the dsh glossary.
+
+### Fixed
+
+- **The plan tab asks its questions in its own tab.** The plan tab of `/orca-feature` and `/orca-epic` asks its planning questions in that tab, as a normal `/plan-feature` run does. It does not send them to the coordinator. A tab that waits on a person counts as busy, so the coordinator waits and sends no escalation.
+- **A dsh tab submits the worker prompt.** dsh refuses Enter until its session opens, so the prompt stayed as a draft. `beast-mode orca start` now presses Enter every 2 seconds until the turn starts, for at most 45 seconds. It presses nothing when the tab waits on a person.
+- **A dsh worker that waits on its own background subagent gets no resume and no escalation count.** The dsh `subagent` tool runs in the background, so the worker ends its turn while the subagent works. The coordinator now waits while a child dsh session of that workspace was written in the last 10 minutes. Progress (a drop in the open task count) resets the escalation count.
+- **The dsh harness glossary describes the background `subagent` tool.** `templates/harness/dsh.md` says that the tool returns at once and that the result comes as a new message. It targets dsh 0.2.1-rc.3.
+- **A finished worker tab closes.** Orca does not close a terminal that it did not create. `beast-mode orca start` opens a tab through a project agent command, so the tab stayed open after the worker finished. The close step now runs `orca terminal close` for that tab.
+
+## [6.2.0] - 2026-11-18
+
+Minor release. No migration script. `beast-mode upgrade` writes the three new skills.
+
+The release carries the `orca-plugin` epic and its `orchestration` feature. The six `orca-plugin` entries sit below the three new entries. Each of them says "No version bump", because the version bump comes with this release.
+
+### Added
+
+- **`/orca-setup`, `/orca-feature`, and `/orca-epic`.** The 29th to 31st command skills. They run Beast Mode work as Orca agent tabs, one fresh tab per phase. `/orca-setup` writes the `orchestration` object of `.beast-mode/orca.json` (the agent of each stage, the commit rule, the lane rule, and the custom steps). `/orca-feature` builds one feature. `/orca-epic` builds a whole epic on its own branch. `/orca-feature` and `/orca-epic` take `$ARGUMENTS`, so the dsh adapter adds an arguments note to each. No autorun flow and no loop command calls them. A fresh manifest holds 48 entries. The live Orca runs are `MANUAL`: no desktop has proven them yet.
+- **`beast-mode orca <step>`.** The seventh installer CLI command, in `installer/lib/orca/`. The steps are `next`, `branch`, `start`, `close`, `commit`, `merge`, `send`, `reply`, `note`, `detect`, and `config`. Each step prints one JSON object with `"schema": 1`. The coordinator tab runs the one action that `next` names, then calls `next` again. The scripts never push, pull, rebase, reset, or merge into the default branch.
+- **The guide `docs/orca-orchestration.md`.** It lists what the run needs, the three commands, the `orchestration` settings, the custom steps, and the state rule.
+
+- **Continuation reads for over-budget remote projects (`orca/src/remote/`, `orca/panel/index.html`, `orca/src/dev-scan.ts`)** — feature `orca-plugin/remote-continuation`, the follow-on of `remote-index`, shipped as a mini-epic feature. For a user, one thing changes: a big remote project now indexes to completion over a few automatic refresh rounds instead of showing the permanent `remote-budget` line — "The project needs more reads than the limit." — forever. A remote read is no longer all-or-nothing: each request drives at most one chunk of a continuation, the existing `pending` count answers carry the real remaining ("Scanning 499 more."), the tab drains hands-free, and the finished shard is what a single pass of the same tree would have written. No constant was raised (all four keep their values), there are no new settings, no new protocol member, no new storage key, and a project that fits today behaves byte-identically; the panel carries one two-operator change — the stall rule now stops on an EXACT equal pair, so an honest first exact count of a large tree keeps the loop draining while a genuine zero-progress cycle still shows the stalled line with Refresh. `node orca/src/dev-scan.ts` gains `--cycles n` for the headless drain proof. Suite 595/595 orca+web TS, npm 394/394, gate six PASS. No version bump — all three version fields stay `6.1.1` and the parity test holds.
+- **The launch: nine command buttons, the project file, and the run ledger (`orca/src/launch/`, `web/src/backend/launch/`, `orca/panel/index.html`, `web/src/backend/index.ts`, `web/src/server/index.ts`)** — feature 5 of the `orca-plugin` epic. The Beast Mode tab gains an action row: `suggest-epic`/`suggest-feature` in the ready header, `plan-epic`/`autorun-epic` in each epic row, and the five feature commands in each Feature view — one press, the exact prompt `/<command> <target>`, submitted at once (epic decision 4). The worker resolves each agent in three layers — the project file `.beast-mode/orca.json`, the two family settings `planAgent`/`implementAgent`, the built-in table (plan family `claude`, implement family `dsh`) — and every button names its agent and layer. A remote project launches ON THE SERVER: one opt-in web-app route, `/api/launch/<project>`, that exists only with `BEAST_TOKEN` and runs the Orca CLI with argument arrays and no shell — the default `orca agent launch`, or for a project command the three-call `terminal create → wait --for tui-idle → send --enter` sequence, each outcome with its own honest line; a `GET` on the same path reads the server file for the view and the guard. A local project launches through `agent.launch`, and a project command rewrites THAT panel launch only, through a synchronous one-shot `agent.launch.before` table (the manifest's one `contributes.hooks` entry; the capability list still holds 8). The run ledger `runs/ledger` — the contract `runs-live` builds against — keeps one open run per target and checkout with the overlap rule, the 12-hour close on read, and Mark ended; blocked buttons go dark with a tooltip and a visible run line. Settings shows the resolved mapping read-only on remote, edits the local file merge-style (hand keys survive, a stale hash refuses, the ONE `node:fs` writer module renames a temp over the target), and saves the refresh interval and `notifyOnBlocked` through `settings.set`. A local workspace with no Beast Mode offers Install with Claude / Install with dsh. The protocol grows additively to fourteen requests; the shared rules live in one pure module with a byte-identical web copy pinned by test; a project whose file fails the schema gets disabled buttons and a problem list, never a guess. No version bump, no new capability, no dependency, no build step; no file under `templates/`, `installer/`, `commands/`, `dsh/`, or `hooks/` changes.
+- **The web app as a second Orca panel index source, and the current-checkout tab rule (`orca/src/remote/`, `orca/src/docs/scan-project.ts`, `orca/src/view/handlers.ts`, `orca/panel/index.html`)** — feature 4 of the `orca-plugin` epic (closes BUG-026). With one `serverUrl` setting, the worker reads a running `@beast-mode/web` app with `GET` calls only — one origin, never a redirect — through a new reader seam under the core parser, so both sources share one parse path field for field. The tab now always shows the CURRENT project and worktree — the focused Orca workspace — for both sources: match by display name and branch, a storage-backed pick when the match cannot place it, focus following, and a local-first read when the workspace is on this machine. The Projects card list is gone. Every failure is a visible line; a stopped server still paints the cached index with its age; the bearer token lives in the Orca secrets store (`secrets:own`, the one sanctioned capability growth — the next load asks approval once) and appears in no answer, log, storage value, or painted text. New additive requests `source.token` and `source.pick`; dev commands `dev-scan --remote`, `--record`, `--check` with a committed recorded-answer fixture that detects web-API drift. No version bump, no dependency, no build step, no file under `web/`, `dsh/`, `templates/`, or `installer/` changes.
+- **The Orca panel browse (`orca/panel/`, `orca/src/view/`, `orca/src/preview/`, `orca/src/dev-preview.ts`)** — feature 3 of the `orca-plugin` epic. The Beast Mode tab becomes a read-only browser over the core index: a Projects view (one card per readable Beast workspace, phase bar, open counts, every empty/loading/partial/error state with its own string), a Project view (the workspace list with the anchor marked, collapsed epic rows with summed tasks and built/bug counts, feature rows inside), a Feature view (phases with task bars, `**Demo:**`/`**Needs:**` lines, the current phase marked, open-item buckets), and one search box over `index.search` — a worker-ranked, capped hit list over the cached shards. `Open in Orca` and `Open file` ride two new never-rejecting worker requests whose every failure paints a visible line beside the press (desktop-only `unavailable` included); the panel still calls exactly one host method, `plugin.request`, all its painted strings live in one frozen `S` object, and every color comes from the 20 frame tokens. The protocol grows additively to seven requests (`view.project`, `open.workspace`, `open.file`, `index.search`); the manifest stays byte-identical. `node orca/src/dev-preview.ts` (`--serve <port> [--for <s>]`, `--theme`, `--hold`, `--query`) writes the browser-client preview page — the real panel bytes, the real srcdoc CSP and theme tokens, and a stub `window.orca` answering from the real request table — so a headless machine proves the panel over real answers; the live Orca tab stays a MANUAL line. No version bump, no capability, event, hook, or setting change, no dependency, no build step.
+- **The Orca core index (`orca/src/docs/`, `orca/src/index/`)** — feature 2 of the `orca-plugin` epic. The marker rule (`.beast-mode/version.json`, `.claude/.beast-mode-version`, or the `docs/features/` fallback) classifies every workspace Orca can reach; a trimmed doc-parser copy inside `orca/` indexes epics (`epic-overview.md` as the sole marker), features, phase progress, `**Demo:**` lines, and open items — bugs, human-testing lines, inbox lines — as counts plus at most five trimmed lines per bucket, and never throws at a file. `index.snapshot` / `index.project` / `index.refresh` answer over one storage shard per project (`index/<sha1>`, 200 KiB self-limit, the trim ladder runs before the write, a 4 MiB prune line), with workspace-row folding, the lazy marker-mtime/TTL staleness rule, a per-request scan budget with visible `pending`, and the one-registration workspace-event fan-out `runs-live` reuses. The committed dev command `node orca/src/dev-scan.ts` (`<path>…` / `--discover` / `--snapshot` / `--fixture` / `--synthetic`) and the live-repo guard test pin the parser against this repo's own docs. One contributed setting, `indexRefreshMinutes` (default 10, 1…1440); no capability, no event, no version bump, no dependency, no build step.
+- **The Orca plugin shell (`orca/`), the repo gate, and three-way version parity** — feature 1 of the `orca-plugin` epic. `orca/` boots as a real Orca plugin: manifest v2 (`trusted-worker`, the seven capabilities final at v1, the four-event budget), the `worker/main.ts` entry with one pure `index.snapshot` handler, one inline-HTML panel (`panel/index.html`, empty state + callout, no external fetch), and `src/protocol.ts` — the epic's frozen request contract with the `REQUEST_NAMES` drift guard. `scripts/orca-gate.sh` runs `orca plugin validate`/`check`, `tsc -p orca`, and the orca TS tests from `npm test`, each step one `PASS`/`FAIL`/`SKIP` line, skipping honestly per tool when `orca`, `tsc`, `node`, or Node type stripping is absent (bash ≥ 3.2; the npx tier probes `--no-install` and never downloads). `dsh/test/packaging.test.js` gains the three-way version-parity assertion: `package.json`, `.claude-plugin/plugin.json`, and `orca/orca-plugin.json` must bump together. No version bump, no install-footprint change, no new npm dependency.
+
+### Changed
+
+- **`/install-beast-mode`, `/upgrade-beast-mode`, and the two dsh skills.** Each offers `/orca-setup` when `beast-mode orca detect` reports `"offer": "setup"`.
+- **`epic-resolution.md`.** It gains three rows in section 6.
+- **`phase-handoff.md`.** It gains the reader note and a change to section 12 rule 3.
+- **The epic overview template.** The Build Order section gains the group rule.
+- **`plan-epic` and `update-epic`.** Both follow the group rule of the epic overview.
+- **The installer tests.** `FOOTPRINT` expects 31 command skills and 48 manifest entries.
+- **The version.** `.claude-plugin/plugin.json`, `package.json`, `package-lock.json`, and the `version` field of `orca/orca-plugin.json` read `6.2.0`. The `dsh/panel/` stamp reads `6.2.0`.
+
+## [6.1.1] - 2026-10-21
+
+Patch release. No migration script. `beast-mode upgrade` updates `tool-rules.md`, `phase-handoff.md`, `feature-orchestrator.md`, and `autorun-epic` when the user did not edit them.
+
+### Fixed
+
+- **A subagent runs each shell command in the foreground (BUG-022).** Rule 4 of `tool-rules.md` forbids a background command and a wait on one. A run over 10 minutes splits into several foreground runs. A child agent therefore does not end its turn while its own run goes on. The block keeps seven rules, at 177 words.
+- **A subagent writes no report file (BUG-025).** Rule 1 of `tool-rules.md` puts the report only in the hand-back message. The harness blocked each report write, and each block cost a step.
+- **The orchestrator waits for a child that waits on background work (BUG-023).** The new rule 7 of `feature-orchestrator.md` forbids a text-only turn while a child runs. On the notice, the orchestrator runs one foreground wait until the child hands back. Section 8 rule 6 of `phase-handoff.md` covers the same notice for every parent.
+- **A retry of `/autorun-epic` waits for the last orchestrator (BUG-024).** Step 5a items 2 and 4 wait until no child agent of the last orchestrator runs. Only then does a fresh orchestrator start, so two agents do not edit the same files.
+
+## [6.1.0] - 2026-10-09
+
+Minor release. No migration script. `beast-mode upgrade` adds the `suggest-epic` skill, and it updates `epic-resolution.md` when the user did not edit it.
+
+### Added
+
+- **`/suggest-epic`.** The 28th command skill. It works like `/suggest-feature`, one level up. It surveys the project, treats each existing epic as one unit, and presents 2 to 4 new top-level epics, each with a draft list of child features. A pick creates `docs/features/<epic>/` and writes `epic-requirements.md` for `/plan-epic`. It never writes `epic-overview.md`, so the folder is not an epic until `/plan-epic` runs. A fresh manifest holds 45 entries.
+
+### Changed
+
+- **`epic-resolution.md`.** It gains the `suggest-epic` row.
+- **The installer tests.** They expect 28 command skills and 45 manifest entries.
+- **`/install-beast-mode` and the dsh install skill.** Both name 28 command skills, and both list `/suggest-epic` in the epic list.
+
+## [6.0.1] - 2026-10-09
+
+Patch release. No migration script. `beast-mode upgrade` updates `interview.md`, `plan-feature`, and `plan-epic` when the user did not edit them.
+
+### Fixed
+
+- **The stop check is a plain chat message.** Section 4 of `interview.md` no longer puts the stop check in a choose call. The dialog hid the assumption list, so the user saw `A1` to `A8` with no text. The command now prints the state line, the answers so far, and the assumptions, one line per item, and waits for the reply. Section 3 rule 6 no longer counts the stop check in the four-question limit per call.
+
+## [6.0.0] - 2026-10-07
+
+Major release. The `deterministic-loop` epic changes the loop in four features: `interview`, `slices`, `inbox`, and `review-session`. No migration script.
+
+`beast-mode upgrade` adds `.beast-mode/interview.md` and updates the four changed skills and the architect when the user did not edit them. No project needs an upgrade step. A project that edited `plan-feature` keeps the old interview, and `interview.md` sits unused. The `slices` upgrade updates `phase-handoff.md`, `interview.md`, three doc templates, six skills, and the architect when the user did not edit them. A plan from before `slices` runs as before. A project that edited `phase-handoff.md` keeps the old file. There, section 10 is the command block, and no section 11 exists. Merge sections 4, 7, and 9 to 13 of the new file by hand. The `inbox` upgrade adds `.beast-mode/templates/inbox.md`, and it updates `phase-handoff.md`, six skills, and the orchestrator when the user did not edit them. The glossary in `.beast-mode/harness.md` always updates. A feature started before `inbox` has no `inbox.md`, and the first write creates it. The `review-session` upgrade adds the `review-session` skill, and it updates `epic-resolution.md` when the user did not edit it. A rule pick of `/review-session` edits `.beast-mode/tool-rules.md` or `.beast-mode/phase-handoff.md`, so a later upgrade skips that file.
+
+### Added
+
+- **The plan interview rules.** `templates/formats/interview.md` installs to `.beast-mode/interview.md`. A round holds at most four questions per call, and a stop check lists the assumptions before the plan starts. Section 8 holds the question set of each command. The install writes 8 format references.
+- **The slice.** Section 11 of `phase-handoff.md` defines a phase as a slice: complete for one path, narrow, and sized to one or two task groups. It adds the base phase and the exit for a feature under about 8 tasks. Each phase carries a `**Demo:**` line and a `**Needs:**` line.
+- **The post-phase step.** Section 10 of `phase-handoff.md` makes the verify, record, and hand-off steps one rule. The verifier ends with `Demo: PASS`, `FAIL`, `MANUAL`, or `none`. A manual run shows the test prompt, and an autorun shows it and goes on.
+- **The inbox.** `docs/features/<feature>/inbox.md` is the inbox of a feature, from the new template `templates/dev-docs/inbox.md`. It holds one line per bug, note, or change (small, medium, or large). Section 12 of `phase-handoff.md` holds the rules, part 5 of section 10 acts on the lines, and the inbox sentence of section 7 goes into every subagent prompt. Section 12 rule 3 checks each user message at any point of a run: while an agent runs, with the answer to a test prompt, between two phases, and before the run ends. A fault, a change, or guidance gets one line and the answer `Noted, handled after this phase.` A question gets a short answer and no line. An open large change skips the fix rounds, and the feature stops at part 5.
+- **The neutral term "send a message to an agent".** It maps to `SendMessage` on Claude Code and to `send_message` on dsh. The vocabulary holds 17 terms. The install writes 7 feature doc templates.
+- **`/review-session`.** The 27th command skill. It reads the log of one session, not the code. A fresh agent ranks findings that each quote one step, and the command applies the picks as a pointer in the project instruction file, a check, or one rule line. No autorun flow calls it. A fresh manifest holds 44 entries.
+- **`beast-mode transcript`.** The sixth CLI command, and the transcript mode of both readers. It prints the numbered steps of one session. With `--out <dir>`, it writes them to `<dir>/<session-id>.txt`. `/review-session` uses `.beast-mode/briefs/review-session/`. With no id, it takes the session that the harness names, else the newest parent log of this project. The token mode does not change.
+
+### Changed
+
+- **`/plan-feature` and `/plan-epic`.** An identical pointer block replaces the clarifying text. `/plan-epic` makes a draft feature set and a draft build order for the round.
+- **The architect prompt of `/plan-feature`.** Step 7 pastes the tool rules and adds the Confirmed Assumptions block.
+- **`solution-architect`.** The agent records the block as `### Confirmed Assumptions` under Key Technical Decisions.
+- **`/autorun-feature` and `/autorun-epic`.** Neither command asks a planning question of its own. The interview of `/plan-feature` holds every planning question. Its research choice and approach choice run as before.
+- **`/upgrade-beast-mode`.** The v4 notice names 5 format references, not 7. The v4 migration script holds a fixed list of five.
+- **The installer tests.** They expect 27 command skills, 7 dev-doc templates, 8 format files, 44 manifest entries, and 17 terms.
+- **The reader contract.** It gains the optional `transcript()`. A reader with no `transcript()` keeps serving `tokens`.
+- **`epic-resolution.md`.** It gains the `review-session` row.
+- **`/install-beast-mode` and the dsh install skill.** Both name 27 command skills, and both list `/review-session` in the start list.
+- **The plan and task templates.** `implementation.md` and `tasks.md` carry the Demo line and the Needs line. They are plain lines, so no task count changes.
+- **`/plan-feature` and `solution-architect`.** Step 7 pastes the Slice rules block. The architect cuts each phase into a slice and writes the Demo and Needs lines.
+- **`interview.md`.** Section 8 asks the demo line of phase 1. A draft with no interview lists it as an open scope question.
+- **`/start-feature`.** The command carries the Demo and Needs lines of each phase from the plan into `tasks.md`.
+- **`/proceed` and `/proceed-advanced`.** After each slice, the command shows the test prompt and asks `It works` or `Something broke`. It runs up to three fix rounds for one fault. A phase with no demo and no UI shows no test prompt.
+- **`/autorun-feature`.** The command shows the test prompt of each slice and goes on. It adds the demo to the human verification items of `context.md`.
+- **`/autorun-epic` and `human-testing.md`.** Each slice adds a `- [ ] Phase <n> demo: <line>` item to the human testing checklist as the slice lands.
+- **The post-phase step.** Part 1 runs every open bug line as one fix brief before the verifier, and a verifier `FAIL` writes a bug line. Part 3 treats any other fault, change, or guidance in a test answer as an inbox item. Part 4 no longer ends the step. Part 5 reads the inbox and acts on each open line. The canonical Phase handoff block moves to section 13.
+- **`/start-feature`.** The command creates `inbox.md` from the new template.
+- **`/proceed` and `/proceed-advanced`.** The commands note the fault, change, or guidance of each user message in the inbox, answer `Noted, handled after this phase.`, and act on the item after the phase.
+- **`/update-feature`.** The command folds the done inbox lines into `context.md`. At the feature end, it files each open bug in `docs/bugs/`.
+- **`/autorun-feature` and `feature-orchestrator`.** The command notes the fault, change, or guidance of each user message in the inbox and acts on them after each phase. The orchestrator never implements an item and never edits the plan, and a medium or a large change becomes a blocker.
+- **`/autorun-epic`.** A medium inbox change stops the feature, asks one scope question, and builds the feature on. A large change ends the run. A resumed run keeps the resumed feature first in the run list, also when its `tasks.md` is complete.
+- **`/install-beast-mode`.** The banner names 7 feature doc templates.
+
+## [5.8.0] - 2026-10-06
+
+Minor release. This is the second feature of the `claude-code` epic. The mod adds the `/dashboard` pane.
+
+The mod needs Claude Code 2.1.287 or later. An older release keeps the skills and the commands. No project needs an upgrade step.
+
+### Added
+
+- **The `/dashboard` pane.** The command opens a docked pane with four views: the project, an epic, a feature, and a bug. A press on a row opens the next view. A Back button (hotkey `b`) returns to the last view. The view stack holds at most three routes. The project view mirrors the Feature Status table of `docs/overview.md`. The epic view mirrors the Features table of `epic-overview.md`. A folder that a table does not name shows as an unlisted row. The command starts no model request. Where no pane draws (`claude -p`, the VS Code chat panel), the command answers with the project view as text. `/dashboard` is a mod, not a command skill, so the count of 26 command skills does not change.
+- **The progress bars.** The terminal shows a text bar. The other surfaces show one small `Svg` for each bar.
+- **The action buttons.** A button fills the prompt with `/autorun-epic`, `/update-epic`, `/autorun-feature`, `/proceed`, `/continue-feature`, `/update-feature`, or `/fix-bug`. A button never submits the prompt. A press over typed text fills nothing and shows a toast.
+- **The live redraw.** A second `tool.call` hook redraws the shown view after an Edit or a Write of a shown doc. The hook reads one file. The `/feature` pane keeps its own hook. The second `session.start` hook carries the matcher `{ isInteractive: [true, false] }`, because the host refuses a second hook on one event with no matcher.
+- **The new lib files.** `hooks/lib/tables.ts`, `hooks/lib/bar.ts`, `hooks/lib/dashboard.ts`, `hooks/lib/moves.ts`, and `hooks/lib/layout.ts`. `hooks/read.ts` gains six loads.
+- **The tests.** `claude plugin test .` runs 640 tests in 14 files. The count was 211 tests in 5 files.
+
+## [5.7.0] - 2026-10-05
+
+Minor release. This is the first feature of the `claude-code` epic. Beast Mode now ships a Claude Code mod. The mod adds the `/feature` pane.
+
+The mod needs Claude Code 2.1.287 or later. An older release keeps the skills and the commands. No project needs an upgrade step.
+
+### Added
+
+- **The `/feature [name]` pane.** With no name, the pane shows the feature with the newest `**Last Updated:**` stamp in `tasks.md`. With a name, it resolves the name with the epic resolution rules. The pane shows the path, the status, the progress, the current phase with its tasks, and the open bugs. It redraws after an Edit or a Write of the shown docs or of a bug file. It starts no model request. Where no pane draws (`claude -p`, the VS Code chat panel), the command answers with the same lines as text. `/feature` is a mod, not a command skill, so the count of 26 command skills does not change.
+- **The hooks module.** `hooks/hooks.json`, `hooks/register.tsx`, `hooks/read.ts`, and `hooks/lib/`. `register.tsx` holds the hooks and `readsOf($)`, the one place that touches `$.fs` (read, list, stat, no write). `read.ts` takes that `Fs` object and holds no `$`. `hooks/lib/` holds pure functions with no `$`. No file holds `import()`, `require`, or a `node:` import.
+- **The contract `types/index.d.ts`.** It types the state under `PluginState['beast-mode']`, with the `FeaturePane` prefix and the `Shaped` tag.
+- **The tests.** `tests/`, 211 tests in 5 files. Run them with `claude plugin test .`.
+- **The gate.** At the plugin root: `claude plugin validate .`, `web/node_modules/.bin/tsc -p .`, and `claude plugin test .`. The root `tsconfig.json` holds the compiler settings.
+
+### Changed
+
+- **The manifest `types` key.** `.claude-plugin/plugin.json` gains `"types": "./types/index.d.ts"`. No fact 1 fallback was applied, so the manifest keys `discordBridge` and `desktopMcpServer` stay.
+- **The deploy allowlist.** `scripts/deploy-public.sh` adds `hooks/`, `types/`, `tests/`, and `tsconfig.json`. The generated `.claude-plugin/types/` stays private.
+- **`dsh/build.mjs`.** Both esbuild calls pass `tsconfigRaw: {}`, so the dsh build ignores the root `tsconfig.json`.
+
+## [5.6.1] - 2026-09-22
+
+Patch release. The delegator now stays out of the verification work. A measured dsh run on 5.6.0 put 59 percent of its prompt tokens in the parent context, because the parent ran the tests, wrote its own browser probes, and read source files to find a fix.
+
+### Added
+
+- **The delegator rules.** `templates/formats/phase-handoff.md` section 8. The parent reads no source file and no test file. It runs no type-check, no test, and no browser check. A failed gate goes to a fix subagent with the error text in the brief. The parent updates `tasks.md` and `context.md` with the edit tool.
+- **The verification brief.** `templates/formats/phase-handoff.md` section 9. After the last group of a phase, the delegator writes one `<phase>-verify.md` brief and starts one verifier subagent. The verifier changes no file, and it returns `PASS`, `FAIL` with the error text, or `BLOCKED`. A fix brief takes the suffix `-fix<n>`.
+
+### Changed
+
+- **`/autorun-feature` steps 5b and 5c.** The verifier subagent runs the automated gate and the UI check. The parent writes the brief, reads the result, and delegates a fix. Step 5d uses the edit tool for the docs.
+- **`/proceed` and `/proceed-advanced`.** Both delegate the gate to a verifier subagent, and neither runs the type-check itself. Both update the docs with the edit tool.
+- **The dsh glossary row for delegation** states `run_in_background: false`. A measured run spent 15.6M prompt tokens in 67 `sleep` poll steps of the parent. Delegator rule 6 in `phase-handoff.md` states the blocking wait for every harness.
+- **The `## Phase handoff` block** of the three delegator commands gains one sentence that names the delegator rules and the verification brief. The block stays identical in the three files.
+
+## [5.6.0] - 2026-09-18
+
+Minor release. This is the sixth feature of the `harness-support` epic. Beast Mode now tracks token use per session. Each subagent prompt now carries a short tool-rules block.
+
+### Added
+
+- **Two new shared reference files.** `templates/formats/tool-rules.md` and `templates/formats/phase-handoff.md`. They install to `.beast-mode/tool-rules.md` and `.beast-mode/phase-handoff.md`. The tool-rules file holds seven rules, under 200 words. The handoff file holds the task group split, the stop rule, the phase brief format, the brief path `.beast-mode/briefs/<feature>/<phase>.md`, and the code review grouping.
+- **Six new neutral terms.** The vocabulary grows from ten terms to sixteen: edit a file, write a file, read a file range, run a shell command, evaluate in the browser, and take a page snapshot. Both glossaries hold 16 rows.
+- **The `## Phase handoff` block.** `/proceed`, `/proceed-advanced`, and `/autorun-feature` hold one identical block. They split a phase into task groups, write a phase brief, and paste the tool rules into each subagent prompt. `/autorun-epic` gets the change through `/autorun-feature`.
+- **`beast-mode tokens [--json] [--days <n>]`.** The fifth installer CLI command. It holds the reader contract, and it ships both the Claude reader and the dsh reader. Flags: `steps-over-100` and `final-prompt-over-300k`.
+- **`/token-report`.** The 26th command skill.
+- **The root `package.json` `bin` field**, for `beast-mode`.
+- **The web Tokens tab.** `GET /api/tokens/:project`, the page `/projects/:name/tokens`, and the `BEAST_MODE_CLI` variable.
+- **The Claude token reader**, `installer/readers/claude.js`. It reads the session logs under `~/.claude/projects/<project>`, and it reports the session count, the step count, and the token sums. **Three Playwright MCP glossary rows.** `templates/harness/claude.md` maps the browser terms of the tool-rules block to Playwright MCP.
+- **The dsh token reader**, `installer/readers/dsh.js`. It reads the session logs under `~/.dsh/sessions/<project key>/`, and under `$DSH_HOME/sessions/<project key>/` when the user sets `DSH_HOME`. It reports the same session count, step count, and token sums. The dsh glossary adds the delegation rule that passes the model route to a child. The dsh install skill adds the model selection hint that asks the user which model the dev agents take.
+
+### Changed
+
+- **The installer appends `.beast-mode/briefs/` to `.gitignore`**, with a per line check.
+- **The agent example, both install texts, and both upgrade texts** point a dev agent at the phase brief and at `.beast-mode/tool-rules.md`. The upgrade command offers the edit for an old dev agent. No project must regenerate a dev agent.
+- **New effort presets.** Max (`xhigh`), High (`high`, the default), Medium (`medium`). A standard dev agent runs on `sonnet` at the preset effort. Every other role runs on `opus` at the preset effort. The upgrade command reads the current `model` and `effort` of each agent, names the current preset, and offers a switch. It changes an agent only after the answer. `feature-orchestrator.md` stays fixed.
+
+## [5.5.0] - 2026-09-17
+
+Minor release. This is the fifth feature of the `harness-support` epic. The Beast Mode dashboard now runs inside the dsh web UI.
+
+### Added
+
+- **The dsh web panel.** A "Beast Mode" tab appears on the conversation view of the dsh web UI. The tab shows the whole Beast Mode dashboard for the project of the current session's workspace.
+- **Two host routes, behind the dsh web gate.** `/beast/api/` serves the Beast Mode API. `/beast/ui/` serves the prebuilt dashboard SPA. Both share the dsh origin, so no CORS header applies. Each route calls `requestRejection` on the dsh `connection` service first, so an unauthenticated caller reads neither route. A gate that is absent closes both routes with 503.
+- **Ten run buttons.** A feature page shows seven buttons: Continue, Autorun, Update, Review, Evaluate, Fix, and Document. An epic page shows three: Autorun, Update, and Review. Each click starts a new dsh session and queues the matching command.
+- **The plain editor mode.** A textarea with a Write and Preview toggle replaces the rich Tiptap editor inside the panel. Tiptap never mounts in this mode.
+- **`dsh/build.mjs`.** The build script writes three artifacts into `dsh/panel/`: the API bundle, the SPA, and the client bundle. Git tracks every artifact, so a dsh install runs no build step.
+- **Four additive `@beast-mode/web` seams.** A `runner` seam, a plain `editor` mode, a `basename` option, and a marker-first version read. Every seam stays inert for the Discord bot and for the standalone server.
+- **`docs/dsh-web-panel.md`.** The guide to the tab, the two routes, the run protocol, and the build script.
+
+### Changed
+
+- **The root `package.json`.** It gains `exports`, `dsh.client`, and the `esbuild` devDependency. `dependencies` stays absent. The `files` array gains two negation entries, `!dsh/src/` and `!dsh/test/`, so the build inputs and the dsh test suite stay out of the npm tarball.
+- **A Claude Code install and a consumer project change in no way.** The installer, the adapters, the 25 command skills, and the templates stay unchanged.
+
+To update the panel on dsh: `dsh plugin --profile <name> update beast-mode`, then reload the web UI.
+
+## [5.4.0] - 2026-09-15
+
+Minor release. This is the fourth and final feature of the `harness-support` epic. Several harnesses now share one project with no conflict.
+
+### Added
+
+- **`.beast-mode/version.json`.** The shared marker records the installed harness set: each harness id, its root, and its version. The core owns the file. No harness owns it and no manifest lists it.
+- **The composed glossary.** The core builds `.beast-mode/harness.md` from the glossary of every harness in the marker. One harness produces the source bytes unchanged. Two or more produce a preamble and one section per harness, in adapter id order.
+- **`beast-mode upgrade` with no harness.** The command upgrades every installed harness in one run and prints one roll-up section. It exits with the highest per-harness exit code.
+- **`beast-mode status`.** A fourth CLI command. It reports the plugin version, every installed harness, and a stale flag per harness. It writes nothing.
+- **The stale-install warning.** `install <harness>` and `upgrade <harness>` name any other harness that falls behind the plugin version. Each warning names `beast-mode upgrade` as the fix.
+- **The conformance test, `installer/test/conformance.test.js`.** It renders both harnesses. It asserts that the two outputs share the same skill set, the same agent set, and the same glossary shape.
+- **`scripts/conformance-live.sh`** and **`scripts/conformance-diff.sh`.** The live script builds a two-harness fixture project. It prints the manual steps for a human to run one workflow on each harness. The diff script compares the two `docs/features/` outputs by file set, heading outline, and required sections only. It never compares body text.
+- **`docs/multi-harness.md`.** The guide to the marker, the composed glossary, the all-harness upgrade, `status`, and the conformance procedure.
+
+### Changed
+
+- **The glossary leaves the manifest.** `.beast-mode/harness.md` is now a core-synthesized file with the kind `shared`. A fresh manifest holds 37 entries, one fewer than before.
+- **A one-harness install sees no glossary change and needs no manual step.** The composed file stays byte-identical to `templates/harness/<id>.md`. A Claude Code upgrade from 5.3.0 reports no change to `harness.md`.
+- **The instruction-file rule.** `AGENTS.md` holds shared project guidance. `CLAUDE.md` holds one line, `@AGENTS.md`.
+
+This release closes CR-4, CR-15, and CR-21.
+
+## [5.3.0] - 2026-09-14
+
+Minor release. This is the fourth feature of the `epics` epic. Beast Mode can now build a whole epic in one command.
+
+### Added
+
+- **`/autorun-epic <epic-name>`.** The command skill runs a whole epic to completion. It plans each feature, delegates each feature build to a fresh agent, commits, fast-forwards the base branch, and pushes per feature, commits the epic rollup docs at the end, and asks the user at each planning gate only.
+- **The `feature-orchestrator` agent.** The second shipped agent, at `templates/agents/feature-orchestrator.md`. One fresh agent builds one feature to the end and returns a structured report. Its `model` and `effort` are fixed at `opus` and `xhigh`.
+- **`docs/features/<epic>/human-testing.md`.** `/autorun-epic` collects the manual test items of every feature into one checklist, appended per feature.
+
+### Changed
+
+- **The called mode of `/autorun-feature`.** When `/autorun-epic` calls the command, it makes no git write, drafts the plan of the next feature, asks nothing, and ends with the structured report. The standalone behavior of `/autorun-feature` does not change.
+- **`templates/formats/epic-resolution.md`** gains one clause row for `autorun-epic`.
+- **The whole-epic option of `/autorun-feature`** now runs the `/autorun-epic` command, instead of looping over the child features in one context.
+
+The upgrade needs no manual step. An existing install gains the new skill folder and the new agent file through the normal upgrade path.
+
+## [5.2.0] - 2026-09-10
+
+Minor release. This is the third feature of the `harness-support` epic. Beast Mode now runs on DeepSeek Harness (dsh) as well as Claude Code. **A Claude Code install gains no file and loses no file.**
+
+### Added
+
+- **`installer/adapters/dsh.js`.** The second adapter of the installer CLI. It renders the 24 command skills into `.agents/skills/<name>/SKILL.md` and the shipped agent into the flat file `.agents/skills/solution-architect.md`.
+- **The `dsh/` bundle.** `dsh/cordis.patch.yml` mounts an ES module skill provider at `dsh/lib/index.js`. A dsh user adds the bundle with `dsh plugin --profile <name> add beast-mode`.
+- **Two dsh skills.** `dsh/skills/install-beast-mode/SKILL.md` and `dsh/skills/upgrade-beast-mode/SKILL.md` give a dsh user `/install-beast-mode` and `/upgrade-beast-mode`, the same entry points a Claude user has. Both call the installer CLI.
+- **The root `beast-mode` npm package.** One `package.json` at the repo root names the package, declares `dsh.bundle.patch`, and lists the shipped paths. No copy step and no second package exist.
+- **The finished dsh glossary.** `templates/harness/dsh.md` pins `DeepSeek Harness 0.1.5-rc.1` and names `web_search` and `web_fetch`.
+
+### Changed
+
+- **The dsh glossary leaves Draft state.** `templates/harness/dsh.md` now holds no `**Status:** Draft` line.
+- **The repo now holds a root `package.json`.** Its version must match `.claude-plugin/plugin.json`, and a unit test asserts the pair.
+- **Three core fixes in `installer/lib/plan.js`.** A `null` frontmatter map now keeps the source header bytes even when the body changes, the `.gitignore` backup line now derives from each harness root, and the install summary now names the real agent directory.
+- **The Claude glossary drops the dsh mention.** `templates/harness/claude.md` no longer names dsh in its nested-skill note, so an upgrade from `5.1.0` reports one updated file.
+
+To install on dsh: `dsh plugin --profile <name> add beast-mode`, then `/install-beast-mode`.
+
+## [5.1.0] - 2026-09-10
+
+Minor release. This is the second feature of the `harness-support` epic. It replaces the bash install script with a Node.js CLI, `installer/`, that any harness adapter can drive. **The upgrade runs automatically. It needs no manual step.**
+
+### Added
+
+- **`installer/`.** A Node.js CLI with zero dependencies, built for Node.js 20 or later. It reads the harness-neutral source under `templates/`, renders it through a per-harness adapter, and writes the result to a project.
+- **Three commands.** `install <harness>` writes a fresh project layout. `upgrade <harness>` compares the project against the last install and updates only what changed. `render <harness> --out <dir>` writes the rendered tree into an arbitrary directory, for testing and for a future conformance check.
+- **The adapter interface.** `destination`, `mapFrontmatter`, `renderBody`, `extraFiles`, and `check`. A harness author writes one adapter file and adds one registry line to add a new harness, with no core edit. The Claude Code adapter ships here, and it is copy-shaped: it changes no placeholder, no frontmatter key, and no byte.
+- **A per-harness manifest.** `.claude/.beast-mode-manifest.json` lists every file the CLI wrote, plus the sha256 of the written content. An upgrade reads the manifest to tell a Beast Mode file from a file the user edited.
+- **`--dry-run`.** `install` and `upgrade` both support it. It prints the full write plan and changes nothing, not even the manifest.
+- **`--force`.** `upgrade` only. It overwrites a file the user edited, after it backs the old copy up.
+- **The backup directory.** `.claude/.beast-mode-backup-<timestamp>/`. Every overwrite, every forced write, and every prune backs the old file up first.
+- **A prune step.** `upgrade` deletes a file the plugin stopped shipping, when the file's hash still matches the manifest. It backs the file up first.
+- **Seven exit codes.** Each one carries a cause and a fix line, so a calling command can branch on the result instead of parsing text.
+- **Three guards.** A symlink guard, a plugin-repo guard, and a same-root guard. `install` and `upgrade` refuse to run in a repo that dogfoods Beast Mode through symlinks, or in the Beast Mode repo itself.
+
+### Changed
+
+- **`/install-beast-mode`** and **`/upgrade-beast-mode`** now call the installer CLI instead of a bash script. A Claude Code install now needs Node.js 20 or later.
+- **`install`** exits 7 on a project that already holds a manifest, and it names `upgrade` as the next step.
+- **The upgrade runs with no manual step.** The first upgrade after this release writes the manifest. On a project installed before `5.1.0`, that first upgrade adopts every file whose disk content already matches the plugin source, skips a file that differs, and reports the skip. It also names `upgrade claude --force` in its summary, which takes the plugin copy of every skipped file after it backs each one up.
+- **`/upgrade-beast-mode` Step 15** now checks for `.beast-mode/templates/README.md` and `.beast-mode/templates/plan.md`. A project installed before `5.1.0` keeps these two stale files. The CLI cannot prove Beast Mode wrote them, so the step offers to delete them by hand.
+
+### Removed
+
+- **`scripts/install-templates.sh`.** The installer CLI replaces it. Run `node ${CLAUDE_PLUGIN_ROOT}/installer/bin/beast-mode.js install claude` in its place.
+
+## [5.0.0] - 2026-09-10
+
+Major release. This is the first feature of the `harness-support` epic. It converts every command, agent, and shared reference into a **harness-neutral** source. A non-Claude harness can now install Beast Mode from the same repo. **The upgrade runs automatically. It needs no manual step.**
+
+### Added
+
+- **`templates/skills/<name>/SKILL.md`.** All 24 commands now ship as Agent Skills bundles, one folder per command, in the Agent Skills format. Each `SKILL.md` carries `name`, `description`, `argument-hint` where it applies, and user-invocable command skills that the model can also run. This replaces `templates/slash-commands/<name>.md`, which no longer exists.
+- **`.beast-mode/`.** This new shared project directory holds every file that a harness reads. It carries `epic-resolution.md`, the format references, the dev-doc templates under `.beast-mode/templates/`, and the new harness glossary at `.beast-mode/harness.md`. `.claude/` now holds only Claude Code output: `.claude/skills/`, `.claude/agents/`, and `.claude/.beast-mode-version`.
+- **The harness glossary.** `templates/harness/claude.md` installs as `.beast-mode/harness.md`. A first `templates/harness/dsh.md` draft covers DeepSeek Harness. Each glossary maps ten neutral terms to the real tool names of one harness.
+- **The ten-term neutral vocabulary and a `## Harness` block.** A command body now writes a neutral term. It no longer names a Claude tool. The ten terms: ask the user to choose, delegate to an agent, run a command, load a skill, search the web, the harness skills directory, the harness agents directory, the project instruction file, the browser automation tool, and `$ARGUMENTS`. A byte-identical `## Harness` block in all 24 skills points at `.beast-mode/harness.md`.
+- **`docs/harness-neutral-source.md`.** This is the layout contract that a later `installer-cli` feature reads. It states the source tree, the installed tree, the skill and agent frontmatter contracts, the ten terms, the canonical `## Harness` block, and the glossary file format.
+- **`scripts/dev-link.sh`.** This script rebuilds this repo's dogfood symlinks after the layout move: `.claude/skills`, `.claude/agents`, `.beast-mode/templates`, `.beast-mode/<format>.md`, and `.beast-mode/harness.md`.
+- **`scripts/migrate-v4-to-v5.sh`.** `/upgrade-beast-mode` runs this script before the file copy, with no user action needed. It backs up `.claude/commands/`, `.claude/templates/`, and the format files into `.claude/.beast-mode-backup-<timestamp>/`. It moves the shared files into `.beast-mode/` and deletes only the command files that the plugin ships. It keeps every hand-written command file in place. A second run reports no work to do.
+
+### Changed
+
+- **`/install-beast-mode`** and **`/upgrade-beast-mode`** now write `.claude/skills/`, `.claude/agents/`, and `.beast-mode/`. Neither writes `.claude/commands/` or `.claude/templates/` on a fresh install.
+- **`.claude-plugin/plugin.json`** now reads `5.0.0`.
+
+### Removed
+
+- **`templates/slash-commands/`,** the `.claude/commands/` install target, and the `.claude/templates/` install target. The 24 commands and the shared files now live at the paths named above.
+- **`templates/dev-docs/README.md`** and **`templates/dev-docs/plan.md`.** Both described the `dev/active/` layout that v2.0 removed. Neither file had a reader left in the plugin.
+
 ## [4.1.2] - 2026-07-25
 
 Patch release. Refines `/plan-feature`'s research step so it defaults to a lightweight web search and only escalates to deep research when the decision genuinely warrants it — and ensures **all research completes before the solution-architect handoff**, since that agent has no web/research access.

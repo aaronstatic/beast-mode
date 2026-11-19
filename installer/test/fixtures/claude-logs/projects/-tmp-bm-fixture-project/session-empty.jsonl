@@ -1,0 +1,2 @@
+{"type":"user","uuid":"eu-1","sessionId":"session-empty","timestamp":"2026-01-06T08:00:00.000Z","message":{"role":"user","content":"Stop here."}}
+{"type":"summary","uuid":"es-1","leafUuid":"eu-1","summary":"The user stopped the session before the first request."}

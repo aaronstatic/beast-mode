@@ -1,0 +1,14 @@
+{
+  "name": "@beast-mode/installer",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "beast-mode": "bin/beast-mode.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

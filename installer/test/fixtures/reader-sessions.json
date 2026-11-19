@@ -1,0 +1,93 @@
+[
+  {
+    "id": "sub-101-steps",
+    "kind": "subagent",
+    "parent": "parent-plain",
+    "model": "model-two",
+    "steps": 101,
+    "finalPromptTokens": 90000,
+    "promptTokens": 4000000,
+    "cacheReadTokens": 3600000,
+    "outputTokens": 30000,
+    "created": "2026-09-15T10:30:00.000Z",
+    "costUsd": null
+  },
+  {
+    "id": "parent-zero-prompt",
+    "kind": "parent",
+    "parent": null,
+    "model": "model-one",
+    "steps": 1,
+    "finalPromptTokens": 0,
+    "promptTokens": 0,
+    "cacheReadTokens": 0,
+    "outputTokens": 0,
+    "created": "2026-09-12T06:00:00.000Z",
+    "costUsd": null
+  },
+  {
+    "id": "sub-320k-final",
+    "kind": "subagent",
+    "parent": "parent-plain",
+    "model": "model-two",
+    "steps": 8,
+    "finalPromptTokens": 320000,
+    "promptTokens": 1000000,
+    "cacheReadTokens": 500000,
+    "outputTokens": 5000,
+    "created": "2026-09-17T08:05:00.000Z",
+    "costUsd": null
+  },
+  {
+    "id": "parent-plain",
+    "kind": "parent",
+    "parent": null,
+    "model": "model-one",
+    "steps": 12,
+    "finalPromptTokens": 120000,
+    "promptTokens": 1200000,
+    "cacheReadTokens": 900000,
+    "outputTokens": 45000,
+    "created": "2026-09-14T09:00:00.000Z",
+    "costUsd": 1.25
+  },
+  {
+    "id": "parent-300001-final",
+    "kind": "parent",
+    "parent": null,
+    "model": "model-one",
+    "steps": 5,
+    "finalPromptTokens": 300001,
+    "promptTokens": 800000,
+    "cacheReadTokens": 400000,
+    "outputTokens": 4000,
+    "created": "2026-09-13T07:45:00.000Z",
+    "costUsd": 1
+  },
+  {
+    "id": "sub-100-steps",
+    "kind": "subagent",
+    "parent": "parent-plain",
+    "model": "model-two",
+    "steps": 100,
+    "finalPromptTokens": 90000,
+    "promptTokens": 2000000,
+    "cacheReadTokens": 1000000,
+    "outputTokens": 20000,
+    "created": "2026-09-16T11:15:00.000Z",
+    "costUsd": null
+  },
+  {
+    "id": "parent-300k-final",
+    "kind": "parent",
+    "parent": null,
+    "model": "model-one",
+    "steps": 5,
+    "finalPromptTokens": 300000,
+    "promptTokens": 700000,
+    "cacheReadTokens": 350000,
+    "outputTokens": 3000,
+    "created": "2026-09-11T05:00:00.000Z",
+    "costUsd": 0.5
+  }
+]

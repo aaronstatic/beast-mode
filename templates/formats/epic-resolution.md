@@ -1,6 +1,6 @@
 # Epic Resolution — Shared Reference
 
-**This file is the single source of truth for epic detection, reference resolution, context loading, and the `/create-epic` rewrite convention.** It is installed to **`.claude/epic-resolution.md`** and is consumed by every epic-aware command via a small "Epic awareness" pointer block (see the bottom of this file). The resolution logic lives here and **only** here — commands never duplicate it, they point at it.
+**This file is the single source of truth for epic detection, reference resolution, context loading, and the `/create-epic` rewrite convention.** It is installed to **`.beast-mode/epic-resolution.md`** and is consumed by every epic-aware command via a small "Epic awareness" pointer block (see the bottom of this file). The resolution logic lives here and **only** here — commands never duplicate it, they point at it.
 
 > **Backwards-compatibility contract:** if there are **no epics** in `docs/features/` (no directory contains an `epic-overview.md`), every rule below is a no-op and commands behave exactly as they did before epics existed. Epic behavior activates **only** when an `epic-overview.md` marker is found.
 
@@ -94,7 +94,7 @@ Users will type `base` when they mean `editor/base`. When a **bare** name (no sl
 
    Then continue as if the user had typed `editor/base` (including loading epic context per §4 for plan/start/continue).
 
-3. **Multiple matches** across different epics → **do not guess**. List the matches and ask the user to disambiguate (prefer `AskUserQuestion` when the command already uses it), e.g.:
+3. **Multiple matches** across different epics → **do not guess**. List the matches and ask the user to choose, e.g.:
 
    ```
    "base" exists in more than one epic. Which did you mean?
@@ -161,7 +161,7 @@ Every epic-aware command pastes the block below near where it parses `$ARGUMENTS
 ## Epic awareness
 
 This command is epic-aware. Before resolving `$ARGUMENTS` to a feature path,
-read `.claude/epic-resolution.md` and apply its rules: detect epics by
+read `.beast-mode/epic-resolution.md` and apply its rules: detect epics by
 `epic-overview.md`, resolve `<epic>/<feature>` references, fuzzy-fall-back into
 epic folders for bare names, and (for plan/start/continue) load epic context.
 If no epics exist in `docs/features/`, behave exactly as before.
@@ -182,6 +182,10 @@ Keep the block identical across commands except for one trailing clause naming w
 | `review-epic` | the target must be an epic; review it holistically across all its features (integration + per-feature tech debt) and write findings into `epic-overview.md` and child `context.md` files. |
 | `update-epic` | the target is an epic; refresh its `epic-overview.md` rollup and the epic's single row in the master overview. |
 | `create-epic`, `plan-epic` | the target is the epic itself; if a target that is already an epic is passed to `/create-epic`, error clearly instead of nesting. |
+| `autorun-epic` | the target is an epic; run its child features one at a time, in the build order of epic-overview.md. |
+| `orca-feature` | and resolve `<epic>/<feature>` for a feature inside an epic, and pass the nested `<epic>/<feature>` path to the step script; a bare epic name → ask which child feature to run, or run `/orca-epic <epic>` for the whole epic. |
+| `orca-epic` | the target is an epic, a folder that holds `epic-overview.md`. Pass the bare epic name to the step script. The script builds the child features in the Build Order of `epic-overview.md`. It builds the features of one Build Order item side by side when the `concurrent` setting of `.beast-mode/orca.json` allows it. A plain feature or an `<epic>/<feature>` reference → stop with a pointer to `/orca-feature`. |
+| `orca-setup` | takes no argument; it writes `.beast-mode/orca.json` only and reads no feature path. It needs no epic-reference resolution. |
 | `fix-bug` | and resolve the bug's `linkedFeature` (not `$ARGUMENTS`, which is the bug ID) to its `<epic>/<feature>` path, loading epic context, when the linked feature lives inside an epic. |
 | `fix-feature` | and resolve `$ARGUMENTS` and each bug's `linkedFeature`; additionally, if `$ARGUMENTS` is a bare epic name, fix open bugs across all of the epic's child features. |
 | `audit-feature` | and resolve `<epic>/<feature>` (loading epic context) when the target is a feature inside an epic; descend into epic folders during the cross-feature scan; a bare epic name → ask which child feature to audit. |
@@ -190,6 +194,9 @@ Keep the block identical across commands except for one trailing clause naming w
 | `evaluate-feature` | and resolve `<epic>/<feature>` (passing epic context to the evaluator) when the target is a feature inside an epic; a bare epic name → ask which child feature to evaluate. |
 | `review-pr` | `$ARGUMENTS` is a PR number; when mapping changed files to feature docs (pr-notes, branch name) descend into epic folders and use the nested `<epic>/<feature>` path. |
 | `suggest-feature` | takes no argument; when surveying features, treat each epic as a unit (read `epic-overview.md`, descend into children) and a suggestion may be a new feature inside an existing epic (`<epic>/<feature>`). |
+| `suggest-epic` | takes no argument; when surveying features, treat each epic as a unit (read `epic-overview.md`, descend into children). A suggestion is always a new top-level epic, never a feature inside an existing epic and never a nested epic. It writes `epic-requirements.md` only, never `epic-overview.md`. |
+| `token-report` | the command takes no argument and reports on the whole project. Detect epics by `epic-overview.md` only to name each session against its feature or epic. |
+| `review-session` | the command takes a session id, not a feature name. Detect epics by `epic-overview.md` only to resolve a feature path that the log names, as `<epic>/<feature>`. |
 
 > The clause only **names which rules apply** for that command — the rules themselves (detection, resolution, fuzzy fallback, context loading, rewrite convention) stay in this file. If you change a rule, change it here once and every command follows.
 >

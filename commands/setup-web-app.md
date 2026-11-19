@@ -151,6 +151,13 @@ Tell the user the generated token and that they'll need it (`Authorization: Bear
 
 **If localhost only:** skip token generation; `BEAST_TOKEN` stays unset.
 
+If this machine is being set up so **another** dashboard can federate with it
+(i.e. it will act as a remote backend, not just run standalone), it must bind
+to the LAN (`BEAST_HOST` set beyond `127.0.0.1`) and **must** set
+`BEAST_TOKEN` — see `web/README.md` ("Using this server as a remote backend")
+for the full checklist (firewalling the port, reverse-proxy for TLS if it
+ever leaves the LAN).
+
 ---
 
 ### Step 6: Write `.env`
@@ -162,6 +169,8 @@ BEAST_PROJECTS=<name-1>:<path-1>,<name-2>:<path-2>,...
 PORT=<port>
 BEAST_HOST=<127.0.0.1 or 0.0.0.0>
 BEAST_TOKEN=<token, or omit the line entirely if localhost-only>
+# Optional — federate with other Beast Mode servers (see web/README.md):
+# BEAST_REMOTES=winbox=http://10.3.1.20:4319|<remote's BEAST_TOKEN>
 ```
 
 **This step is idempotent** — if `.env` already exists (a re-run), overwrite it with the newly confirmed values rather than creating a second file or appending. Show:
