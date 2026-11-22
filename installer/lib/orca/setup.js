@@ -19,7 +19,7 @@ import * as manifestLib from '../manifest.js';
 import * as marker from '../marker.js';
 import { render } from '../plan.js';
 import { readSource } from '../source.js';
-import { AGENT_IDS, ORCA_JSON_MAX_BYTES, ORCA_JSON_REL, parseOrcaConfig, readOrcaConfig, writeFileAtomic } from './read.js';
+import { AGENT_IDS, NUMBER_SETTINGS, ORCA_JSON_MAX_BYTES, ORCA_JSON_REL, parseOrcaConfig, readOrcaConfig, writeFileAtomic } from './read.js';
 import { call, orcaCalls } from './exec.js';
 
 /** The `.beast-mode` folder, relative to the project root. */
@@ -473,10 +473,26 @@ export function detect(ctx) {
     usable,
     config,
     suggested,
+    numberSettings: numberSettings(),
     projectSkills,
     editedAutoruns,
     offer,
   };
+}
+
+/**
+ * The whole-number settings of the orchestration object (fix 7), for the
+ * questions of `/orca-setup`: the default, the bounds, and the unit of each.
+ *
+ * @returns {Record<string, { default: number, min: number, max: number, unit: string }>}
+ */
+export function numberSettings() {
+  return Object.fromEntries(
+    Object.entries(NUMBER_SETTINGS).map(([key, bounds]) => [
+      key,
+      { default: bounds.fallback, min: bounds.min, max: bounds.max, unit: key === 'backstopSeconds' ? 'seconds' : 'minutes' },
+    ])
+  );
 }
 
 // ---------------------------------------------------------------------------

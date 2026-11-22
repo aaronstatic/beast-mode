@@ -1,6 +1,6 @@
 {
   "name": "beast-mode",
-  "version": "6.2.2",
+  "version": "6.2.4",
   "description": "Beast Mode workflow system for agent harnesses.",
   "type": "module",
   "license": "MIT",

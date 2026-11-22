@@ -70,7 +70,20 @@ const PLAN_ASK_RULE = [
 ];
 
 /**
- * Render one spec: the header, the read list, the work part, the four
+ * The delegate rule of every spec. A worker that starts a helper of its own
+ * through Orca, and then ends its turn to wait, waits on mail that Orca
+ * queues until its next turn. An idle tab gets no next turn, so the run
+ * stalls. The delegate term of `.beast-mode/harness.md` returns the result
+ * of the agent in the same turn on every harness.
+ */
+const DELEGATE_RULE = [
+  '- Start no Orca worker and no Orca task of your own. Delegate only by the term "delegate to the',
+  '  `<name>` agent" of `.beast-mode/harness.md`, in the form whose call returns the result of the agent',
+  '  in the same turn. Never end your turn while an agent that you started still works.',
+];
+
+/**
+ * Render one spec: the header, the read list, the work part, the five
  * rules, and the done proof.
  *
  * @param {SpecParts} parts
@@ -107,6 +120,7 @@ function render(parts) {
       ...parts.ask,
     ]),
     ...parts.inbox,
+    ...DELEGATE_RULE,
     '- Touch no shared or production environment.',
     '',
     ...parts.done,
@@ -517,12 +531,14 @@ export const SEND_REASONS = ['open-tasks', 'escalation', 'report', 'missing-verd
  * `escalation` is the resume text, `report` asks for the report, and
  * `missing-verdict` asks for the verdict file. Pure.
  *
- * @param {{ label: string, reason: string, open: string[], spec: string | null }} facts
- *   `label` names the work, for example "Phase 2 of demo". `spec` is the spec path of the tab.
+ * @param {{ label: string, reason: string, open: string[], spec: string | null, mail?: number, dispatchId?: string | null }} facts
+ *   `label` names the work, for example "Phase 2 of demo". `spec` is the spec path of the tab. `mail` counts the
+ *   undelivered messages of the tab (fix 7): a resume or a report text then names them.
  * @returns {{ subject: string, body: string }}
  */
-export function sendText({ label, reason, open, spec }) {
+export function sendText({ label, reason, open, spec, mail = 0, dispatchId = null }) {
   const items = open.map((item) => `- ${item}`);
+  const mailLines = mail > 0 ? mailText(mail, dispatchId) : [];
   if (reason === 'open-tasks') {
     return {
       subject: `Open items: ${label}`,
@@ -539,9 +555,10 @@ export function sendText({ label, reason, open, spec }) {
     return {
       subject: `Resume: ${label}`,
       body: [
-        `The coordinator read your escalation. Resume the work of ${label} by your spec${spec ? `, \`${spec}\`` : ''}.`,
+        `Your turn ended, or it was interrupted, with no report. Go on from where you stopped: resume the work of ${label} by your spec${spec ? `, \`${spec}\`` : ''}.`,
         'For an answer that you need, run the `ask` command of your worker preamble, then end your turn.',
         'Run `worker_done` from your worker preamble when the done proof of your spec holds.',
+        ...mailLines,
         ...(items.length > 0 ? ['', 'These items are still open:', ...items] : []),
       ].join('\n'),
     };
@@ -552,6 +569,7 @@ export function sendText({ label, reason, open, spec }) {
       body: [
         `The coordinator read the files of ${label}, and the done proof of your spec holds.`,
         'Run `worker_done` from your worker preamble now, and name the work in the report.',
+        ...mailLines,
       ].join('\n'),
     };
   }
@@ -562,6 +580,26 @@ export function sendText({ label, reason, open, spec }) {
       'Line 1 is `PASS`, `FAIL`, or `BLOCKED`. Then run `worker_done` from your worker preamble again.',
     ].join('\n'),
   };
+}
+
+/**
+ * The mail line of a resume or a report send (fix 7): the tab has mail that
+ * Orca has not delivered, most often the report of a helper that the tab
+ * waits for. A message that the tab already marked read stays out of a
+ * plain `check`, so the line names the mailbox for `inbox` too.
+ *
+ * @param {number} mail The undelivered messages.
+ * @param {string | null} dispatchId
+ * @returns {string[]}
+ */
+function mailText(mail, dispatchId) {
+  const box = dispatchId ? `\`dispatch:${dispatchId}\`` : 'your mailbox';
+  return [
+    '',
+    `You have unread orchestration mail: ${mail === 1 ? '1 message' : `${mail} messages`} that Orca has not delivered to you.`,
+    'Read it now with the `check` command of your worker preamble, and act on it. When `check` returns',
+    `nothing, list the mail with the \`inbox\` command of Orca for ${box}, with \`--full\`.`,
+  ];
 }
 
 /**
@@ -696,4 +734,37 @@ export function stepSpec({ target, epic, point, command, verdictFile }) {
       'when the file is missing. Name the verdict and the evidence in the report.',
     ],
   });
+}
+
+/** The longest tab title (fix 5). */
+export const TASK_TITLE_MAX = 60;
+
+/**
+ * The title of the Orca Task of a first start (fix 5): `<leaf>: <work>`.
+ * Orca shows it as the tab title (`getAgentRowPrimaryText` reads the Task
+ * title). The leaf of the feature comes first, so the tabs of one run sort
+ * together. A step command that is too long ends in an ellipsis, so the
+ * title stays within TASK_TITLE_MAX characters. Phase 0 is a real phase.
+ *
+ * @param {{ feature: string, stage: string, phase?: number | null, round?: number | null, command?: string | null }} facts
+ *   `feature`: the feature path, or the epic name. `stage`: the stage of the start, or `epic-docs`. `round`: the fix round.
+ *   `command`: the step command, with its tokens filled.
+ * @returns {string}
+ */
+export function taskTitleOf({ feature, stage, phase = null, round = null, command = null }) {
+  const leaf = feature.split('/').filter(Boolean).pop() ?? feature;
+  const numbered = Number.isInteger(phase) && /** @type {number} */ (phase) >= 0;
+  /** @type {string} */
+  let work;
+  if (stage === 'phase' && numbered) work = `Phase ${phase} implement`;
+  else if (stage === 'verify' && numbered) work = `Phase ${phase} verify`;
+  else if (stage === 'fix' && numbered) work = Number.isInteger(round) && /** @type {number} */ (round) > 0 ? `Phase ${phase} fix ${round}` : `Phase ${phase} fix`;
+  else if (stage === 'review-fix') work = 'review fixes';
+  else if (stage === 'epic-docs') work = 'epic docs';
+  else if (stage === 'step') work = `step ${(command ?? '').replace(/\s+/g, ' ').trim()}`.trim();
+  else work = stage;
+  const head = `${leaf}: `;
+  const room = TASK_TITLE_MAX - head.length;
+  if (work.length > room) work = room > 1 ? `${work.slice(0, room - 1).trimEnd()}…` : work.slice(0, Math.max(room, 0));
+  return `${head}${work}`.slice(0, TASK_TITLE_MAX);
 }

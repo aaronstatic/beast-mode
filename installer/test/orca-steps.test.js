@@ -212,10 +212,13 @@ test('verdict: readStepVerdicts keys each verdict file, marks a bad line 1 as nu
     write('orca-step-feature-0.md', 'a spec, not a verdict');
     write('orca-step-other-0.verdict.md', 'PASS');
     write('orca-step-phase-0-0.verdict.md', 'PASS');
+    write('orca-step-phase-01-0.verdict.md', 'PASS');
     assert.deepEqual(readStepVerdicts(dir), {
       'feature:0': { verdict: 'PASS', evidence: 'all good' },
       'phase-2:1': { verdict: null, evidence: '' },
       'epic:0': { verdict: 'BLOCKED', evidence: 'no network' },
+      // Phase 0 is a real phase (fix 4). A phase number with a leading zero names no phase.
+      'phase-0:0': { verdict: 'PASS', evidence: '' },
     });
     assert.deepEqual(readStepVerdicts(path.join(dir, 'missing')), {});
   } finally {
@@ -1140,4 +1143,115 @@ test('detect: a description that the scalar parser refuses still reads from its 
   } finally {
     removeFixture(root);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 7: wakes that Orca never delivered to the coordinator
+// ---------------------------------------------------------------------------
+
+/**
+ * The `inbox --full` answer of the Run mailbox: one worker_done of `disp-1`
+ * that Orca never delivered, sent five minutes before NOW.
+ *
+ * @param {Record<string, any>} [patch]
+ * @returns {import('../lib/orca/exec.js').RunResult}
+ */
+function lostReport(patch = {}) {
+  return envelope({
+    messages: [
+      {
+        id: 'msg_lost',
+        to_handle: 'run:run-1',
+        type: 'worker_done',
+        subject: 'PASS',
+        read: 1,
+        created_at: new Date(NOW.getTime() - 5 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        delivered_at: null,
+        payload: JSON.stringify({ taskId: 'task-1', dispatchId: 'disp-1', outcome: 'succeeded' }),
+        ...patch,
+      },
+    ],
+    count: 1,
+  });
+}
+
+const IDLE_SHOW = envelope({ dispatchId: 'disp-1', state: 'ready', stage: 'turn', liveness: 'live', activity: 'idle' });
+
+test('fix 7: a claude step tab whose worker_done never reached the coordinator closes on a timer wake, and every wait names the timer', { skip: NO_GIT }, () => {
+  const root = makeProject();
+  try {
+    orcaStep(root, ['start', '--feature', 'demo', '--stage', 'step', '--step', '0']);
+    writeBrief(root, 'orca-step-feature-0.verdict.md', 'PASS\nall good');
+    const fake = fakeRunner({ ...ORCA_ANSWERS, 'worker-show': IDLE_SHOW, inbox: lostReport() });
+
+    // The wake never came. The wait on the claude tab names the backstop timer.
+    const wait = orcaStep(root, ['next', '--feature', 'demo'], { runner: fake.runner }).json;
+    assert.equal(wait.action, 'wait');
+    assert.equal(wait.timer.seconds, 600);
+    assert.match(wait.timer.run, / orca next --feature demo --wake timer --project /);
+    assert.ok(!fake.orca.some((args) => args[1] === 'inbox' && args[2] === '--terminal' && args[3] === 'run:run-1'), 'only a timer wake or a fresh call reads the Run mailbox');
+    // Fix 9: the run mail read for an open question is a different read, and an idle tab makes it on any call.
+    assert.ok(fake.orca.some((args) => args[1] === 'inbox' && args[2] === '--run' && args[3] === 'run-1'), 'an idle tab reads the run mail for a question');
+
+    // The timer wake finds the lost worker_done in the Run mailbox and accepts the report.
+    const json = orcaStep(root, ['next', '--feature', 'demo', '--wake', 'timer'], { runner: fake.runner }).json;
+    assert.equal(json.action, 'close', JSON.stringify(json));
+    assert.equal(json.verdict, 'PASS');
+    assert.deepEqual(fake.orca.at(-2), ['orchestration', 'inbox', '--terminal', 'run:run-1', '--limit', '50', '--full', '--json']);
+    // The lost worker_done makes the tab done before a question counts, so no run mail read follows (fix 7, then fix 9).
+    assert.deepEqual(fake.orca.at(-1).slice(0, 2), ['orchestration', 'worker-show']);
+    assert.ok(!fake.orca.some((args) => args[1] === 'check'), 'the read marks nothing');
+
+    // A delivered message, a message for another dispatch, and a young message are no lost wake.
+    for (const patch of [
+      { delivered_at: NOW.toISOString() },
+      { payload: JSON.stringify({ dispatchId: 'disp-9' }) },
+      { created_at: new Date(NOW.getTime() - 30 * 1000).toISOString() },
+    ]) {
+      const other = fakeRunner({ ...ORCA_ANSWERS, 'worker-show': IDLE_SHOW, inbox: lostReport(patch) });
+      assert.notEqual(orcaStep(root, ['next', '--feature', 'demo', '--wake', 'timer'], { runner: other.runner }).json.action, 'close', JSON.stringify(patch));
+    }
+
+    // Orca lost the message entirely, and the worker is settled: the timer wake closes from the state alone.
+    const settled = fakeRunner({ ...ORCA_ANSWERS, 'worker-show': envelope({ dispatchId: 'disp-1', state: 'succeeded', stage: 'settled' }) });
+    assert.equal(orcaStep(root, ['next', '--feature', 'demo', '--wake', 'timer'], { runner: settled.runner }).json.action, 'close');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('fix 7: a failed read of the Run mailbox is no wake: a busy tab waits, with the timer', { skip: NO_GIT }, () => {
+  const root = makeProject();
+  try {
+    orcaStep(root, ['start', '--feature', 'demo', '--stage', 'step', '--step', '0']);
+    // No fake answer for inbox: the read fails.
+    const fake = fakeRunner({ ...ORCA_ANSWERS });
+    const json = orcaStep(root, ['next', '--feature', 'demo', '--wake', 'timer'], { runner: fake.runner }).json;
+    assert.equal(json.action, 'wait', JSON.stringify(json));
+    assert.equal(json.timer.seconds, 600);
+    assert.ok(fake.orca.some((args) => args[1] === 'inbox'), 'the read was tried');
+    // An Orca error answer reads the same way.
+    const failed = fakeRunner({ ...ORCA_ANSWERS, inbox: { status: 1, signal: null, stdout: '', stderr: 'boom', error: null } });
+    assert.equal(orcaStep(root, ['next', '--feature', 'demo', '--wake', 'timer'], { runner: failed.runner }).json.action, 'wait');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('fix 7: a lost escalation counts as the escalation wake of its tab, once', () => {
+  const lost = (createdAt, stopReason = null) => [{ id: 'msg_e', kind: 'escalation', dispatch: 'disp-1', stopReason, createdAt }];
+  const base = facts({ steps: [], tasks: TWO_PHASES_ONE_DONE, worker: { state: 'idle', detail: [] } });
+  const phaseRecord = (active = {}) => ({
+    ...newRecord('demo'),
+    active: { stage: 'phase', phase: 2, step: null, round: 0, agent: 'claude', placement: 'current', dispatchId: 'disp-1', taskId: 'task-1', runId: 'run-1', startedAt: '2026-11-18T06:00:00.000Z', sendBacks: 0, escalations: 0, ...active },
+  });
+  const with_ = (record, mailWakes) => ({ ...base, flags: { ...base.flags, mailWakes }, record: { record, note: null } });
+  // No wake: an idle tab waits. A lost escalation for it: the resume send.
+  assert.equal(decideFeature(with_(phaseRecord(), [])).action, 'wait');
+  const send = decideFeature(with_(phaseRecord(), lost('2026-11-18T07:00:00.000Z')));
+  assert.deepEqual([send.action, send.reason], ['send', 'escalation']);
+  // Answered by a later send: no second send from the same message.
+  assert.equal(decideFeature(with_(phaseRecord({ escalationAt: '2026-11-18T07:05:00.000Z' }), lost('2026-11-18T07:00:00.000Z'))).action, 'wait');
+  // A lost escalation of another tab does not count.
+  assert.equal(decideFeature(with_(phaseRecord(), [{ ...lost('2026-11-18T07:00:00.000Z')[0], dispatch: 'disp-9' }])).action, 'wait');
 });

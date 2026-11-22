@@ -391,6 +391,13 @@ test('epic decide E13: a run resumed on a lane branch waits on a busy tab, and c
   const busy = { state: 'busy', detail: [] };
   const waited = assertAction(decideEpic(resumed(busy)), 'wait');
   assert.deepEqual([waited.workers[0].dispatchId, waited.workers[0].feature], ['disp-1', 'editor/base']);
+  // Fix 7: a lane wait on a dsh tab names the timer of the epic run, and a busy dsh lane with undelivered mail gets the send.
+  assert.deepEqual(waited.timer.run, ['next', '--epic', 'editor', '--wake', 'timer']);
+  const mailed = assertAction(decideEpic(resumed({ ...busy, mail: { messages: [{ id: 'msg_a' }], detail: [] } })), 'send');
+  assert.deepEqual(mailed.run, ['send', '--feature', 'editor/base', '--epic', 'editor', '--reason', 'escalation', '--mail']);
+  // Fix 9: an idle lane tab with an open question gets the question action of its lane, not a send.
+  const asked = decideEpic(resumed({ state: 'idle', detail: [], questions: { questions: [{ id: 'msg_q', question: 'All hold?', options: [] }], detail: [] } }, OPEN, { wake: 'timer' }));
+  assert.deepEqual([asked.action, asked.feature, asked.questions[0].id], ['question', 'editor/base', 'msg_q']);
 
   const closed = assertAction(decideEpic(resumed({ state: 'done', detail: [] }, COMPLETE)), 'close');
   assert.deepEqual(closed.run, ['close', '--feature', 'editor/base', '--epic', 'editor']);
@@ -522,6 +529,8 @@ test('lanes: an item with two features starts both lanes in new child worktrees,
     ]
   );
   assert.equal(action.say, '2 tabs work: the Phase 1 tab of editor/base on dsh and the Phase 1 tab of editor/ux on dsh. Orca wakes this tab when one reports.');
+  // Fix 7: one backstop timer for the group, and it names the epic run, not a lane.
+  assert.deepEqual(action.timer, { seconds: 600, statusEveryMinutes: 30, run: ['next', '--epic', 'editor', '--wake', 'timer'] });
 
   // 4. ux reports first: its close wins while base still works.
   const uxDone = laneEntry('ux', { tasks: COMPLETE, record: uxBusy.record.record });
@@ -1264,6 +1273,9 @@ test('git: the epic docs tab starts on epic/<epic> with its spec, takes a send, 
     const spec = fs.readFileSync(path.join(root, '.beast-mode', 'briefs', 'editor', 'orca-epic-docs.md'), 'utf8');
     assert.ok(spec.startsWith('# Beast Mode orca worker - editor, Epic docs\n'));
     assert.equal(readEpicRecord(root, 'editor').record.active.dispatchId, 'disp-9');
+    // The Task title of the epic tab leads with the epic (fix 5).
+    const startArgs = fake.orca().find((args) => args[1] === 'worker-start');
+    assert.equal(startArgs?.[startArgs.indexOf('--task-title') + 1], 'editor: epic docs');
     assert.equal(step(start).code, 'tab-active');
 
     assert.equal(step(['send', '--epic', 'editor', '--reason', 'open-tasks']).code, 'nothing-open');
@@ -1396,7 +1408,7 @@ test('lanes: git: two lanes start with new-child, build in their worktrees, repo
     // The submit loop of the dsh tab reads the tab one time after the start, and the turn runs (fix 1).
     assert.deepEqual(fake.orca().at(-1), ['orchestration', 'worker-show', '--dispatch', 'disp-1', '--json']);
     assert.deepEqual(fake.orca().at(-2), [
-      'orchestration', 'worker-start', '--spec-file', mainSpec, '--worktree', 'new-child', '--name', 'base', '--base-branch', 'epic/editor',
+      'orchestration', 'worker-start', '--spec-file', mainSpec, '--task-title', 'base: Phase 1 implement', '--worktree', 'new-child', '--name', 'base', '--base-branch', 'epic/editor',
       '--agent', 'dsh', '--timeout-ms', '120000', '--json',
     ]);
     for (const [key, value] of [['base', 'epic/editor'], ['epic', 'editor'], ['feature', 'editor/base']]) {
@@ -1435,7 +1447,7 @@ test('lanes: git: two lanes start with new-child, build in their worktrees, repo
     assert.deepEqual([json.action, json.stage, json.placement, json.worktree], ['start', 'docs', 'worktree', tree('ux')]);
     json = step(['start', ...lane('ux'), '--stage', 'docs']);
     assert.deepEqual([json.ok, json.placement, json.dispatchId], [true, 'worktree', 'disp-3']);
-    assert.equal(fake.orca().at(-2)[5], `path:${tree('ux')}`, 'a later tab selects the lane worktree, before the read of the submit loop');
+    assert.equal(fake.orca().at(-2)[7], `path:${tree('ux')}`, 'a later tab selects the lane worktree, before the read of the submit loop');
     fs.appendFileSync(path.join(tree('ux'), 'docs', 'features', 'editor', 'ux', 'implementation.md'), '\nThe docs tab updated this file.\n');
     fake.shows['disp-3'] = 'succeeded';
     assert.equal(step(['next', '--epic', 'editor']).action, 'close');
@@ -1547,6 +1559,8 @@ function commandLaneOrca(root) {
         commandState.terminals += 1;
         return envelope({ terminal: { handle: `term-${commandState.terminals}`, title: null } });
       }
+      // The rename after a start (fix 6).
+      if (args[1] === 'rename') return envelope({ terminal: { handle: args[3], title: args[5] } });
       return envelope({ wait: { handle: args[3], condition: 'tui-idle', satisfied: true, status: 'running', exitCode: null } });
     }
     return lanes.runner(command, args, options);
@@ -1578,9 +1592,11 @@ test('command: lanes: git: a new lane with a project command makes its worktree 
       ['worktree', 'create', '--name', 'base', '--parent-worktree', 'active', '--base-branch', 'epic/editor', '--json'],
       ['terminal', 'create', '--worktree', selector, '--command', 'dsh-personal', '--json'],
       ['terminal', 'wait', '--terminal', 'term-1', '--for', 'tui-idle', '--timeout-ms', '60000', '--json'],
-      ['orchestration', 'worker-start', '--spec-file', spec, '--terminal', 'term-1', '--worktree', selector, '--json'],
+      ['orchestration', 'worker-start', '--spec-file', spec, '--task-title', 'base: Phase 1 implement', '--terminal', 'term-1', '--worktree', selector, '--json'],
       // The submit loop of the dsh tab reads the tab one time, and the turn runs (fix 1).
       ['orchestration', 'worker-show', '--dispatch', 'disp-1', '--json'],
+      // The rename runs after the submit loop, with the Task title (fix 6).
+      ['terminal', 'rename', '--terminal', 'term-1', '--title', 'base: Phase 1 implement', '--json'],
     ]);
     assert.deepEqual(
       [json.ok, json.placement, json.path, json.terminal, json.readyState, json.worktree, json.worktreeId, json.branch, json.dispatchId],
@@ -1611,11 +1627,15 @@ test('command: lanes: git: a new lane with a project command makes its worktree 
     assert.deepEqual(fake.orca().slice(before), [
       ['terminal', 'create', '--worktree', selector, '--command', 'dsh-personal', '--json'],
       ['terminal', 'wait', '--terminal', 'term-2', '--for', 'tui-idle', '--timeout-ms', '60000', '--json'],
-      ['orchestration', 'worker-start', '--spec-file', path.join(tree, '.beast-mode', 'briefs', 'editor', 'base', 'orca-docs.md'), '--terminal', 'term-2', '--worktree', selector, '--json'],
+      ['orchestration', 'worker-start', '--spec-file', path.join(tree, '.beast-mode', 'briefs', 'editor', 'base', 'orca-docs.md'), '--task-title', 'base: docs', '--terminal', 'term-2', '--worktree', selector, '--json'],
       ['orchestration', 'worker-show', '--dispatch', 'disp-2', '--json'],
+      ['terminal', 'rename', '--terminal', 'term-2', '--title', 'base: docs', '--json'],
     ]);
     assert.deepEqual([json.ok, json.placement, json.path, json.terminal, json.dispatchId], [true, 'worktree', 'command', 'term-2', 'disp-2']);
-    assert.ok(fake.orca().every((args) => !args.includes('--agent') && !args.includes('--title')), 'the command path names no agent and no title');
+    assert.ok(
+      fake.orca().every((args) => !args.includes('--agent') && (args[1] === 'rename' || !args.includes('--title'))),
+      'the command path names no agent and no title, except the rename of the tab'
+    );
   } finally {
     removeFixture(root);
     removeFixture(fake.wtRoot);
@@ -1750,6 +1770,49 @@ test('close tab: lanes: git: an already_released lane close whose terminal close
   }
 });
 
+test('close tab: lanes: git: a failed release of an own lane or epic terminal runs no terminal close and says the tab stays open (fix 5)', { skip: NO_GIT }, () => {
+  const root = makeCommandLaneProject();
+  const fake = commandLaneOrca(root);
+  /** @type {import('../lib/orca/exec.js').Runner} */
+  const runner = (command, args, options) => {
+    if (command === FAKE_ORCA && args[1] === 'worker-release') {
+      fake.orca().push([...args]);
+      return refused('dispatch_inactive', 'not settled');
+    }
+    return fake.runner(command, args, options);
+  };
+  try {
+    const step = (args) => orcaStep(root, args, runner);
+    const lane = ['--feature', 'editor/base', '--epic', 'editor'];
+    const tree = path.join(fake.wtRoot, 'base');
+    assert.equal(step(['branch', '--epic', 'editor']).ok, true);
+
+    // The lane form: a failed release closes no terminal and says the tab stays open.
+    assert.equal(step(['start', ...lane, '--stage', 'phase', '--phase', '1']).ok, true);
+    fs.writeFileSync(path.join(tree, 'base.txt'), 'base\n');
+    fs.writeFileSync(path.join(tree, 'docs', 'features', 'editor', 'base', 'tasks.md'), COMPLETE);
+    fake.shows['disp-1'] = 'succeeded';
+    let before = fake.orca().length;
+    let json = step(['close', ...lane]);
+    assert.deepEqual(fake.orca().slice(before), [['orchestration', 'worker-release', '--dispatch', 'disp-1', '--json']], 'no terminal close');
+    assert.deepEqual([json.ok, json.terminalClosed], [true, false]);
+    assert.ok(json.say.endsWith(' The tab term-1 stays open: close it in Orca.'), json.say);
+
+    // The epic form: the same rule for the epic docs tab.
+    json = step(['start', '--epic', 'editor', '--stage', 'epic-docs']);
+    assert.equal(json.ok, true, JSON.stringify(json));
+    const terminal = json.terminal;
+    before = fake.orca().length;
+    json = step(['close', '--epic', 'editor']);
+    assert.deepEqual(fake.orca().slice(before), [['orchestration', 'worker-release', '--dispatch', json.dispatchId, '--json']], 'no terminal close');
+    assert.deepEqual([json.ok, json.terminalClosed], [true, false]);
+    assert.ok(json.say.endsWith(` The tab ${terminal} stays open: close it in Orca.`), json.say);
+  } finally {
+    removeFixture(root);
+    removeFixture(fake.wtRoot);
+  }
+});
+
 test('command: lanes: git: when Orca refuses the new worktree, the run stops lane-worktree-refused, and after the clear the lane builds in sequence in the main workspace', { skip: NO_GIT }, () => {
   const root = makeCommandLaneProject();
   const fake = commandLaneOrca(root);
@@ -1790,9 +1853,10 @@ test('command: lanes: git: when Orca refuses the new worktree, the run stops lan
     assert.deepEqual(fake.orca().slice(before), [
       ['terminal', 'create', '--worktree', 'current', '--command', 'dsh-personal', '--json'],
       ['terminal', 'wait', '--terminal', 'term-1', '--for', 'tui-idle', '--timeout-ms', '60000', '--json'],
-      ['orchestration', 'worker-start', '--spec-file', path.join(root, '.beast-mode', 'briefs', 'editor', 'base', 'orca-phase-1.md'), '--terminal', 'term-1', '--worktree', 'current', '--json'],
+      ['orchestration', 'worker-start', '--spec-file', path.join(root, '.beast-mode', 'briefs', 'editor', 'base', 'orca-phase-1.md'), '--task-title', 'base: Phase 1 implement', '--terminal', 'term-1', '--worktree', 'current', '--json'],
       // The submit loop of the dsh tab reads the tab one time, and the turn runs (fix 1).
       ['orchestration', 'worker-show', '--dispatch', 'disp-1', '--json'],
+      ['terminal', 'rename', '--terminal', 'term-1', '--title', 'base: Phase 1 implement', '--json'],
     ]);
     assert.deepEqual([json.ok, json.placement], [true, 'current']);
     assert.equal(headOf(root), 'feat/editor/base');
@@ -1801,6 +1865,56 @@ test('command: lanes: git: when Orca refuses the new worktree, the run stops lan
   } finally {
     removeFixture(root);
     removeFixture(fake.wtRoot);
+  }
+});
+
+test('tab title: a new-child lane start on the agent path renames the tab of the receipt with the Task title', { skip: NO_GIT }, () => {
+  const root = makeLaneProject();
+  const fake = laneOrca(root);
+  /** @type {string[][]} */
+  const seen = [];
+  /** @type {import('../lib/orca/exec.js').Runner} */
+  const runner = (command, args, options) => {
+    if (command === FAKE_ORCA) seen.push([...args]);
+    if (command === FAKE_ORCA && args[0] === 'terminal' && args[1] === 'rename') return envelope({ terminal: { handle: args[3], title: args[5] } });
+    const answer = fake.runner(command, args, options);
+    if (command === FAKE_ORCA && args[1] === 'worker-start') {
+      const result = JSON.parse(answer.stdout).result;
+      return envelope({ ...result, terminal: `term-${result.dispatchId}` });
+    }
+    return answer;
+  };
+  try {
+    const step = (args) => orcaStep(root, args, runner);
+    assert.equal(step(['branch', '--epic', 'editor']).ok, true);
+    const json = step(['start', '--feature', 'editor/base', '--epic', 'editor', '--stage', 'phase', '--phase', '1']);
+    assert.deepEqual([json.ok, json.placement, json.tabTitled], [true, 'new-child', true], JSON.stringify(json));
+    assert.deepEqual(seen.at(-2).slice(0, 2), ['orchestration', 'worker-show']);
+    assert.deepEqual(seen.at(-1), ['terminal', 'rename', '--terminal', 'term-disp-1', '--title', 'base: Phase 1 implement', '--json']);
+  } finally {
+    removeFixture(root);
+    removeFixture(fake.wtRoot);
+  }
+});
+
+test('tab title: git: the epic docs start renames its tab, and a failed rename keeps the start good', { skip: NO_GIT }, () => {
+  for (const refusedRename of [false, true]) {
+    const root = makeEpicProject();
+    try {
+      const fake = fakeRunner({
+        'worker-start': envelope({ runId: 'run-9', taskId: 'task-9', dispatchId: 'disp-9', state: 'ready', terminal: 'term-9' }),
+        'worker-show': envelope({ dispatchId: 'disp-9', state: 'ready', stage: 'input_accepted', liveness: 'live', activity: 'working' }),
+        terminal: refusedRename ? refused('terminal_not_found', 'No terminal term-9.') : envelope({ terminal: { handle: 'term-9', title: 'editor: epic docs' } }),
+      });
+      gitIn(root, ['switch', '-q', '-c', 'epic/editor', 'main']);
+      const json = orcaStep(root, ['start', '--epic', 'editor', '--stage', 'epic-docs'], fake.runner);
+      assert.deepEqual([json.ok, json.dispatchId, json.tabTitled], [true, 'disp-9', !refusedRename], JSON.stringify(json));
+      assert.deepEqual(fake.orca().at(-1), ['terminal', 'rename', '--terminal', 'term-9', '--title', 'editor: epic docs', '--json']);
+      assert.equal(fake.orca().filter((args) => args[1] === 'rename').length, 1);
+      assert.equal(readEpicRecord(root, 'editor').record.active.dispatchId, 'disp-9');
+    } finally {
+      removeFixture(root);
+    }
   }
 });
 

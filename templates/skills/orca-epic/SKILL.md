@@ -60,8 +60,9 @@ If no epics exist in `docs/features/`, behave exactly as before.
 |---|---|
 | `branch`, `start`, `send`, `commit`, `merge` | Run the `run` line by step 4. Then call `next` by step 5. |
 | `close` | Print `show` as written, when it is not null. Run the `run` line by step 4. Then call `next` by step 5. |
-| `wait` | Show each running tab: its `feature`, `stage`, `phase`, and `worktree`. Then end your turn. Orca wakes you, by The wake. |
+| `wait` | Show each running tab: its `feature`, `stage`, `phase`, and `worktree`. When the action holds a `timer`, start it by The backstop timer. Then end your turn. Orca wakes you, by The wake. |
 | `ask` | Ask by the ask rule, and end your turn. |
+| `question` | A tab asked a question that has no answer yet, and it waits for the answer, so it is not stalled. Show each entry of `questions` by the question rule of The wake: its `question`, and its `options` numbered, when it has any. Answer each one by The answer to a question, with the `id` of the entry as the message id. End your turn. A question that you showed before, with no answer yet, needs one line that it still waits. |
 | `stop` | Show `reason`, each line of `detail`, and `fix`. End the run. |
 | `done` | Print `show`, the summary block, as written. It lists the worktrees in its `Worktrees:` block. End the run. |
 
@@ -106,7 +107,7 @@ A `start` action of the stage `step` runs one configured command in its own tab,
 
 After `wait`, your turn ends. Orca wakes this tab with each message of a worker. A wake comes from Orca. It holds the message, or it names a read command. A message names its kind, such as `worker_done` or `escalation`, and its sender, the dispatch id of the worker.
 
-- **A report.** Any worker message that is not a `question`. Run a shell command: `beast-mode orca next --epic <epic> --wake <kind> --dispatch <id>`, in the form of step 1. Pass the kind word for word, and the bare dispatch id with no `dispatch:` prefix. Leave out `--dispatch` when the message names no dispatch. Then go on at step 2 of the loop.
+- **A report.** Any worker message that is not a `question`. Run a shell command: `beast-mode orca next --epic <epic> --wake <kind> --dispatch <id> --stop-reason <reason>`, in the form of step 1. Pass the kind word for word (the timer passes the kind `timer` itself), and the bare dispatch id with no `dispatch:` prefix. Leave out `--dispatch` when the message names no dispatch. Pass the `stopReason` of the message payload, such as `errored`, word for word as `--stop-reason`, and leave it out when the payload names none. Then go on at step 2 of the loop.
 - **A wake that names a read command.** In a terminal, or for a message too long for the chat, the wake names a read command in place of the message. Run that command once, exactly as written. It is the one Orca command of this command. Then act on each message of its output, in order. Show every question of the output before your turn ends.
 - **A question.** A `question` message asks for an answer. Its sender is a worker tab, and it holds a message id. The question starts with a tag that names its feature, such as `[editor/ux phase 2]`, or `[editor epic-docs]` for the epic docs tab. With several tabs, each question names its own feature, so keep the tag at the start of each one. Show the question in one plain chat message, by the ask rule, and keep the tag at its start. Number the options, and put the recommended option first. Then end your turn. Do not answer in the tab of the worker.
 - **A message from the user.** An answer to a question wake goes on by The answer to a question. An answer to your own question goes on by the ask rule. Any other message goes on by The message from the user.
@@ -125,9 +126,9 @@ Check each user message at any point of the run, also while a tab works. A messa
   1. Write the text of the user, word for word, to `.beast-mode/briefs/orca/note.md`. Write the file again for each message.
   2. Run a shell command: `beast-mode orca note --feature <epic>/<feature> --kind <kind> --text-file .beast-mode/briefs/orca/note.md`, in the form of step 1 of the loop. `<epic>/<feature>` is the inbox feature. Pass no `--epic` flag.
   3. Check the exit code and read the JSON object, as in step 4 of the loop. A code that is not 0 ends the run. A refusal (`"ok": false`) shows its `code` and `detail` lines.
-  4. Answer `Noted, handled after this phase.` and end your turn. The `delivery` field of the result tells where the text went: `send` is the running tab of the feature, and `inbox` is one line in its `inbox.md`. A refused send falls back to the inbox line, so you do nothing more.
-- **A question.** Give a short answer from the last `next` output. Write no line, and call no step. End your turn.
-- **A stop request.** Run a shell command: `beast-mode orca next --epic <epic> --stop`, in the form of step 1 of the loop, and go on at step 2 of the loop. When the action is `wait`, pass `--stop` on each later `next` call of this run, the wake call too.
+  4. Answer `Noted, handled after this phase.` and end your turn. The `delivery` field of the result tells where the text went: `send` is the running tab of the feature, and `inbox` is one line in its `inbox.md`. A refused send falls back to the inbox line, and so does a note for a tab that has ended its work (it reported, and the run waits on its ask or close), so you do nothing more.
+- **A question.** Give a short answer from the last `next` output. Write no line, and call no step. End your turn. A question about the state of the run, such as "what's happening?", while the last action was `wait`, is the one exception: Orca can miss a wake (see Notes). Run a shell command: `beast-mode orca next --epic <epic>`, in the form of step 1 of the loop, and go on at step 2 of the loop with its action. When the action is `wait` again, answer from it and end your turn.
+- **A stop request.** Run a shell command: `beast-mode orca next --epic <epic> --stop`, in the form of step 1 of the loop, and go on at step 2 of the loop. When the action is `wait`, pass `--stop` on each later `next` call of this run, the wake call too. The `run` line of a timer already holds `--stop`.
 
 A line that you write while the epic docs tab works stays open in the inbox of the last feature. When the run ends, name each such line and the path of its inbox.
 
@@ -135,16 +136,31 @@ Never interrupt a running tab. Never act on the message yourself.
 
 ### The answer to a question
 
-When the user answers a question wake:
+When the user answers a question wake, or a question of a `question` action:
 
 1. Write the answer, word for word, to `.beast-mode/briefs/orca/answer.md`. Write the file again for each answer.
-2. Run a shell command: `beast-mode orca reply --id <message-id> --body-file .beast-mode/briefs/orca/answer.md`, in the form of step 1 of the loop. Use the message id of the question, as the wake names it.
+2. Run a shell command: `beast-mode orca reply --id <message-id> --body-file .beast-mode/briefs/orca/answer.md`, in the form of step 1 of the loop. Use the message id of the question, as the wake or the `id` of the action names it.
 3. Check the exit code and read the JSON object, as in step 4 of the loop. A code that is not 0 ends the run. A refusal (`"ok": false`) shows its `code` and `detail` lines.
 4. Call `next`, by step 5 of the loop. Go on at step 2.
 
 When one wake holds more than one question, show all of them in one message, and end your turn. Answer each one by the steps above.
 
-Do not poll, and do not sleep. Start no watch script and no background command. Never read the mail on your own: a read takes the mail, and then Orca has nothing to wake you with. The end of your turn is the wait.
+Do not poll, and do not sleep. Start no watch script and no background command, apart from the one timer of The backstop timer. Never read the mail on your own: a read takes the mail, and then Orca has nothing to wake you with. The end of your turn is the wait.
+
+### The backstop timer
+
+A wake can fail to come. Orca does not report the later idle turns of a dsh tab, and Orca can fail to deliver wakes to this tab itself: after an Orca restart, the `worker_done` of a finished tab can stay in the mailbox of the Run and never wake you. Orca also sends no wake for a claude turn that ended with no Stop hook: an interrupted turn, such as a stray Esc, stays `working` in Orca for ever. So every `wait` holds a `timer`, for every tab and every agent: `seconds`, `statusEveryMinutes`, and a `run` line. On the timer wake, `next` reads the mailbox of the Run without marking it, and it takes a report that Orca never delivered as its wake. `.beast-mode/orca.json` sets both numbers (`orchestration.backstopSeconds`, default 600, and `orchestration.statusEveryMinutes`, default 30), and `/orca-setup` asks for them. It is the one background command of this command.
+
+1. Run a shell command in the background, so that your turn can end: `sleep <seconds>`, with the `seconds` of the timer. Start at most one timer. When a timer of this run still runs, start no second one.
+2. End your turn as the table says.
+3. When the timer ends, run its `run` line by step 4 of the loop. It is `beast-mode orca next --epic <epic> --wake timer`. Then go on at step 2 of the loop. A `wait` with a `timer` starts the next timer.
+
+The timer reads no mail and runs no Orca command. A wake from Orca before the timer ends goes on as usual: run `next` for it, and do not stop the timer. A timer that ends after the run ended moves nothing. Orca can hold the question of a tab, and type no wake for it, while this tab runs the timer. The tab then waits on that answer, so `next` answers `question` for it, not a resume send or an ask to drop the tab.
+
+**A timer wake is a quiet check.** Run the check on every timer, and keep the chat quiet:
+
+- When `next` gives `wait` again and nothing changed (the same tabs wait, with the same `say`), post no message to the user. At most, post one short line, such as `Still working: <the tab>.`, and only when no such line went out in the last `statusEveryMinutes` minutes of the timer. Start the next timer, and end your turn.
+- Speak only when something goes wrong or a stage finishes. Something goes wrong: the check acted on a stall (a `send`), or it gives `stop`, `ask`, `question`, or a failed command. A stage finishes: a `start`, `close`, `commit`, `merge`, or `done`. Then show the action as the table says.
 
 ---
 
@@ -167,13 +183,13 @@ For an `ask` action, the question is `question`, and the options are the `label`
 
 ## Safety rules (never violate)
 
-1. **Run only the lines of the script.** Run `next`, the `run` line of an action or of a chosen option, the `reply` command of an answer, the `note` command of a user message, and the read command of a wake. Compose no other command. Run the command of a `fix` only when the user asks for it.
+1. **Run only the lines of the script.** Run `next`, the `run` line of an action, of a chosen option, or of a timer, the `reply` command of an answer, the `note` command of a user message, and the read command of a wake. Compose no other command. Run the command of a `fix` only when the user asks for it.
 2. **No git command.** The step lines own every git call: each branch, each commit, and each merge into `epic/<epic>`. Run no git command yourself. Resolve no merge conflict, because the user does that.
 3. **The default branch does not move.** Never rebase, never pass `--force`, never push, and never pull. Never merge into the default branch, and never pass `--no-verify`. No `fix` and no user request lifts this rule.
 4. **No phase work.** Build nothing, verify nothing, and edit or write no file, except the answer file `.beast-mode/briefs/orca/answer.md` and the note file `.beast-mode/briefs/orca/note.md`. The tabs do the work, and `next` confirms it in `tasks.md`.
 5. **No other Beast Mode command.** The tabs run them. For one feature, point the user at `/orca-feature`, and do not run it yourself.
 6. **No Orca command of your own.** The script starts, reads, and closes each tab. You run only the read command that a wake names, `reply` for an answer, and `note` for a user message.
-7. **No wait loop.** End your turn, and Orca wakes you. No poll, no sleep, no watch script, and no background command.
+7. **No wait loop.** End your turn, and Orca wakes you. No poll, no sleep, no watch script, and no background command. The one exception is the timer of The backstop timer: one `sleep`, and then its `run` line.
 8. **Never touch a shared or production environment.** No deploy, no build on a server, and no service restart.
 
 ---
@@ -205,9 +221,10 @@ To end the run, state what ran, what the output says, and the smallest next step
 - A `start-unknown` ask means that Orca gave no answer to a start, so a tab can be open. The options are stop (recommended) and clear. Both say "Check Orca for a new tab of <work> first". Tell the user to check Orca before the answer. Never offer a retry for it.
 - A project command of `orca.json` starts the tab of that agent, in a lane tab and in the epic docs tab too. The `start` action names `path` (`agent` or `command`) and `command`, and its `say` names the command. Run the `run` line as written: the loop does not change. A start result with `readyState` `ready-unconfirmed` is not a fault. Show its `say`, and call `next`. A failed start leaves its terminal open. Show its detail line, which tells the user to close it in Orca.
 - A dsh tab can keep its prompt as a draft, so the `start` step presses Enter in the tab until the turn starts. A start result with `submit` `unconfirmed` is not a fault. Show its `say`, and call `next`.
-- A dsh tab that waits on its own subagent is left alone: `next` gives `wait`, and the run sends it nothing. When a dsh tab stays idle and no subagent runs, the user can say "resume". Then run a shell command: `beast-mode orca next --epic <epic> --wake escalation`, in the form of step 1 of the loop, and go on at step 2.
+- A dsh tab that waits on its own subagent is left alone: `next` gives `wait`, and the run sends it nothing. A dsh tab with mail that Orca never delivered, idle or shown as busy, gets the resume text with a line that tells it to read the mail. The backstop timer finds a tab that stalls, or a report that never woke you. A tab of any agent that Orca shows in a turn, with no status from its agent for 15 minutes, counts as idle with no report: `next` gives the resume send once, then asks. When a dsh tab stays idle and no subagent runs, or a tab sits at its prompt after an interrupt, the user can say "resume". Then run a shell command: `beast-mode orca next --epic <epic> --wake escalation`, in the form of step 1 of the loop, and go on at step 2.
 - When Orca refuses to make the worktree of a lane, the next call stops with `lane-worktree-refused`. Show the `fix` line. The lane, and its whole group, then build in sequence, in the main workspace. The mark stays until the user deletes the lane record.
 - `next` decides from the state, not from the message. So a duplicate wake does no harm.
+- Orca can miss a wake. Orca types the wake into this tab only after it has seen this tab's agent status live. After Orca restarts (an app update, for example) while this tab is idle, it holds every wake until this tab works and goes idle again, so a report reaches you late: the backstop timer finds it in the mailbox of the Run. A user message ends that hold: the wake comes after your answer. When the user asks what is happening, `next` reads the report from the files at once.
 - A `run` line names the absolute `node`, the absolute CLI path, and `--project`. It needs no `beast-mode` on the path. Compose no `run` line yourself.
 - The run leaves `epic/<epic>` for the user. The `done` summary names the uncommitted files, the worktrees, the human tests, and the merge into the default branch. The feature branches stay for the user to delete.
 - Keep your context lean. Show `say` and `show`, not the whole JSON.

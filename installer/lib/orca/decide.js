@@ -15,7 +15,14 @@
 // proof of each stage, and they turn an escalation, an exit, a loss, and a
 // broken circuit into a send, an ask, or a stop. An idle dsh tab whose
 // subagent session still writes waits (fix 2): the child-activity fact of
-// dsh.js comes in on the worker. F14 asks before a failed
+// dsh.js comes in on the worker. A dsh tab with mail that Orca never
+// delivered gets the resume text with a mail line, idle or busy (fix 7),
+// and every wait names a backstop timer for the coordinator, whose lost wakes
+// `next` reads from the mailbox of the Run. A busy tab whose agent has sent
+// no status for STALE_TURN_MS gets the resume text too (fix 8): its turn
+// ended with no Stop hook. A tab that asked a question with no answer yet
+// gets the `question` action (fix 9): it waits on the coordinator, so it
+// gets no resume text. F14 asks before a failed
 // start runs again, and only as a retry of the same Orca Task. Until Phase
 // 9, a split verify runs inside the phase tab (Notes 13). From Phase 9, a
 // verify agent that differs from the implement agent gets its own tab: a
@@ -42,9 +49,11 @@
 // its merge, also when its group drops to one feature.
 
 import {
+  NUMBER_SETTINGS,
   fillStepTokens,
   isConcurrentGroup,
   isPhaseComplete,
+  isPhaseNumber,
   phaseVerdictName,
   stepKey,
   stepPoint,
@@ -63,6 +72,48 @@ export const ESCALATION_CAP = 1;
 
 /** A4, fix 2: the `say` of an idle dsh tab whose subagent session still writes. */
 export const DSH_WAIT_SAY = 'The dsh worker waits on its own subagent. The run waits for its report.';
+
+/**
+ * A4, fix 7: mail to a tab that Orca has not delivered after this time counts as stuck. Orca delivers
+ * the mail of a busy tab after its turn, so a tab that ended its turn to wait for that mail never gets it.
+ */
+export const UNDELIVERED_MAIL_MS = 10 * 60 * 1000;
+
+/**
+ * Fix 7: the default backstop timer of every wait, in seconds. Orca does not report the later idle turns
+ * of a dsh tab, and it can fail to deliver wakes to the coordinator itself, so the coordinator wakes
+ * itself once with `next --wake timer` after this time. Fix 8 uses the same timer: Orca sends no wake for
+ * a claude turn that ended with no Stop hook either.
+ * `orchestration.backstopSeconds` of `.beast-mode/orca.json` sets it.
+ */
+export const DSH_TIMER_SECONDS = NUMBER_SETTINGS.backstopSeconds.fallback;
+
+/** Fix 7: the default of `orchestration.statusEveryMinutes`, the most often a quiet timer wake posts a line. */
+export const STATUS_EVERY_MINUTES = NUMBER_SETTINGS.statusEveryMinutes.fallback;
+
+/**
+ * Fix 7: a wake to the coordinator that Orca has not delivered after this time counts as lost. Orca can
+ * fail to deliver wakes to the coordinator itself (seen after an Orca restart), so on a timer wake or a
+ * fresh call `next` reads the mailbox of the Run and takes such a message as the wake it names.
+ */
+export const COORDINATOR_MAIL_MS = 60 * 1000;
+
+/**
+ * Fix 8: a tab that Orca shows in a running turn, whose agent sent no status for this time, counts as
+ * stopped. Claude Code runs no Stop hook when the user interrupts a turn (Esc), so Orca shows the tab as
+ * `working` for ever. Every tool call and every subagent step sends a status, so a turn that works is
+ * never quiet this long: one foreground shell command runs at most 10 minutes.
+ */
+export const STALE_TURN_MS = 15 * 60 * 1000;
+
+/**
+ * Fix 8: the user said "resume" (an escalation wake that names no dispatch). A busy tab that has been
+ * quiet this long gets the resume text at once, not after STALE_TURN_MS.
+ */
+export const RESUME_QUIET_MS = 2 * 60 * 1000;
+
+/** The wake kind of the backstop timer (fix 7). */
+export const TIMER_WAKE = 'timer';
 
 /** F14: the failed starts of one `--retry-of` chain. Orca breaks the circuit at the third. */
 export const START_FAILURE_CAP = 3;
@@ -106,7 +157,8 @@ const MAX_SUMMARY_LINES = 10;
 /**
  * @typedef {Object} FeatureFacts
  * @property {string} feature The feature reference, for example "editor/ux".
- * @property {{ fresh: boolean, wake: string | null, dispatch: string | null, stop?: boolean, acceptDirty?: boolean }} flags
+ * @property {{ fresh: boolean, wake: string | null, dispatch: string | null, stopReason?: string | null, stop?: boolean, acceptDirty?: boolean, mailWakes?: import('./exec.js').MailWake[] }} flags
+ *   `mailWakes` (fix 7): the wakes that Orca never delivered to the coordinator, read on a timer wake or a fresh call.
  * @property {string | null} terminalHandle The `ORCA_TERMINAL_HANDLE` value.
  * @property {import('./read.js').OrcaConfigRead} config
  * @property {string[]} harnesses The installed harness ids.
@@ -125,6 +177,13 @@ const MAX_SUMMARY_LINES = 10;
  * @property {string | null} [terminal]
  * @property {{ active: boolean, detail: string[] }} [child] The child-activity fact of dsh.js (fix 2). steps.js
  *   reads it only for an idle dsh tab that rule A4 judges (wantsDshChild).
+ * @property {{ messages: { id: string }[], detail: string[] }} [mail] The undelivered mail of the tab (fix 7), from
+ *   exec.js undeliveredMail(). steps.js reads it only for an idle or busy dsh tab (wantsPendingMail).
+ * @property {number} [quietMs] How long a busy tab in a `working` turn has sent no agent status (fix 8), from
+ *   exec.js turnQuietMs(). Absent when Orca names no time.
+ * @property {{ questions: { id: string, question: string, options: string[] }[], detail: string[] }} [questions] The
+ *   questions of the tab that wait on the coordinator (fix 9), from exec.js openQuestions(). steps.js reads them
+ *   only for a tab that rule A4 would judge (wantsOpenQuestions).
  */
 
 /**
@@ -378,8 +437,9 @@ function phaseLabel(phase) {
  * @returns {string} The name of the tab of an active dispatch.
  */
 function tabName(feature, active) {
-  if (active.stage === 'phase' && active.phase) return `the Phase ${active.phase} tab of ${feature}`;
-  if ((active.stage === 'verify' || active.stage === 'fix') && active.phase) {
+  const numbered = isPhaseNumber(active.phase);
+  if (active.stage === 'phase' && numbered) return `the Phase ${active.phase} tab of ${feature}`;
+  if ((active.stage === 'verify' || active.stage === 'fix') && numbered) {
     return `the ${active.stage} tab of Phase ${active.phase} of ${feature}`;
   }
   if (active.stage === 'step' && typeof active.stepCommand === 'string') {
@@ -395,8 +455,9 @@ function tabName(feature, active) {
  */
 function tagOf(feature, entry) {
   if (entry.stage === 'step') return `${feature} step ${entry.point ?? ''}`.trim();
-  if ((entry.stage === 'verify' || entry.stage === 'fix') && entry.phase) return `${feature} phase ${entry.phase} ${entry.stage}`;
-  return `${feature} ${entry.stage === 'phase' && entry.phase ? `phase ${entry.phase}` : entry.stage ?? 'run'}`;
+  const numbered = isPhaseNumber(entry.phase);
+  if ((entry.stage === 'verify' || entry.stage === 'fix') && numbered) return `${feature} phase ${entry.phase} ${entry.stage}`;
+  return `${feature} ${entry.stage === 'phase' && numbered ? `phase ${entry.phase}` : entry.stage ?? 'run'}`;
 }
 
 /**
@@ -405,9 +466,10 @@ function tagOf(feature, entry) {
  */
 function stageWords(entry) {
   if (entry.stage === 'step') return 'the same step';
-  if (entry.stage === 'verify' && entry.phase) return `the verification of Phase ${entry.phase}`;
-  if (entry.stage === 'fix' && entry.phase) return `the fix of Phase ${entry.phase}`;
-  return entry.stage === 'phase' && entry.phase ? `Phase ${entry.phase}` : `the ${entry.stage ?? 'same'} stage`;
+  const numbered = isPhaseNumber(entry.phase);
+  if (entry.stage === 'verify' && numbered) return `the verification of Phase ${entry.phase}`;
+  if (entry.stage === 'fix' && numbered) return `the fix of Phase ${entry.phase}`;
+  return entry.stage === 'phase' && numbered ? `Phase ${entry.phase}` : `the ${entry.stage ?? 'same'} stage`;
 }
 
 /**
@@ -1004,6 +1066,37 @@ function waitAction(facts, active) {
         dispatchId: active.dispatchId,
       },
     ],
+    timer: timerOf(facts),
+  };
+}
+
+/**
+ * The backstop timer of every wait (fix 7). Orca reports no later idle
+ * turn of a dsh tab, mail that a tab waits for can stay undelivered, Orca
+ * sends no wake for a turn that ended with no Stop hook (fix 8), and Orca
+ * can fail to deliver wakes to the coordinator itself (seen after an Orca
+ * restart), so no wake comes. The coordinator starts one timer of
+ * `seconds`, and when it ends it runs `run`: `next` with `--wake timer`,
+ * which judges the tab as on a fresh call. A lane of `/orca-epic` names
+ * the epic run. `seconds` and `statusEveryMinutes` come from the
+ * orchestration settings: the coordinator posts at most one "still
+ * working" line per `statusEveryMinutes` on a timer wake that changed
+ * nothing.
+ *
+ * @param {{ feature: string, flags?: FeatureFacts['flags'], target?: RunTarget, config?: FeatureFacts['config'] }} facts
+ * @returns {{ seconds: number, statusEveryMinutes: number, run: string[] }}
+ */
+function timerOf(facts) {
+  const args = targetArgs(facts);
+  const at = args.indexOf('--epic');
+  const run = at >= 0 ? ['--epic', args[at + 1]] : args;
+  // A stop request holds on every later call, the timer call too.
+  const stop = facts.flags?.stop === true ? ['--stop'] : [];
+  const settings = facts.config && /** @type {any} */ (facts.config).orchestration;
+  return {
+    seconds: typeof settings?.backstopSeconds === 'number' ? settings.backstopSeconds : DSH_TIMER_SECONDS,
+    statusEveryMinutes: typeof settings?.statusEveryMinutes === 'number' ? settings.statusEveryMinutes : STATUS_EVERY_MINUTES,
+    run: ['next', ...run, '--wake', TIMER_WAKE, ...stop],
   };
 }
 
@@ -1062,9 +1155,11 @@ function sliceBlock(phase, fact = null) {
  * @param {'open-tasks' | 'escalation' | 'report' | 'missing-verdict'} reason
  * @param {string[]} open
  * @param {string} say
+ * @param {number} [mail] The undelivered messages of the tab (fix 7). Above 0, the send names `--mail`, and its
+ *   text tells the tab to read its mail.
  * @returns {Record<string, any>}
  */
-function sendAction(facts, active, reason, open, say) {
+function sendAction(facts, active, reason, open, say, mail = 0) {
   const { feature } = facts;
   const failed = active.failedSend;
   if (failed && failed.reason === reason && !facts.flags.fresh) {
@@ -1080,11 +1175,12 @@ function sendAction(facts, active, reason, open, say) {
     schema: SCHEMA,
     action: 'send',
     say,
-    run: ['send', ...targetArgs(facts), '--reason', reason],
+    run: ['send', ...targetArgs(facts), '--reason', reason, ...(mail > 0 ? ['--mail'] : [])],
     feature,
     dispatchId: active.dispatchId,
     reason,
     open,
+    ...(mail > 0 ? { mail } : {}),
   };
 }
 
@@ -1095,7 +1191,160 @@ function sendAction(facts, active, reason, open, say) {
  */
 function escalatedFor(flags, active) {
   const forThisTab = !flags.dispatch || flags.dispatch === active.dispatchId;
-  return flags.wake === 'escalation' && forThisTab;
+  return (flags.wake === 'escalation' && forThisTab) || lostWakes(flags, active, 'escalation').length > 0;
+}
+
+/**
+ * The wakes of one kind for this tab that Orca never delivered to the
+ * coordinator (fix 7). An escalation from before the last resume or report
+ * send of the tab (`escalationAt` of the record) was already answered, so
+ * each lost escalation counts once.
+ *
+ * @param {FeatureFacts['flags']} flags
+ * @param {Record<string, any>} active
+ * @param {string} kind
+ * @returns {import('./exec.js').MailWake[]}
+ */
+function lostWakes(flags, active, kind) {
+  const answered = typeof active.escalationAt === 'string' ? Date.parse(active.escalationAt) : Number.NaN;
+  return (flags.mailWakes ?? []).filter(
+    (wake) =>
+      wake.dispatch === active.dispatchId &&
+      wake.kind === kind &&
+      !(kind === 'escalation' && Number.isFinite(answered) && Date.parse(wake.createdAt) <= answered)
+  );
+}
+
+/**
+ * @param {FeatureFacts['flags']} flags
+ * @param {Record<string, any>} active
+ * @returns {boolean} Rule A4 judges the tab: an escalation wake for it, or the backstop timer wake (fix 7), which
+ *   judges a tab as a fresh call does. Every wait names the timer, because Orca can fail to deliver wakes to the
+ *   coordinator itself, and it sends no wake for a turn that ended with no Stop hook (fix 8).
+ */
+function judgedFor(flags, active) {
+  return escalatedFor(flags, active) || flags.wake === TIMER_WAKE;
+}
+
+/**
+ * Fix 8: a busy tab whose turn ended with no Stop hook. Orca shows it as
+ * `working`, and its agent sent no status for STALE_TURN_MS, or for
+ * RESUME_QUIET_MS when the user said "resume" (an escalation wake that
+ * names no dispatch; a wake from Orca always names one). The quiet time
+ * comes in on the worker as `quietMs` (exec.js turnQuietMs()).
+ *
+ * @param {FeatureFacts['flags']} flags
+ * @param {WorkerFact} worker
+ * @returns {boolean}
+ */
+function staleTurn(flags, worker) {
+  const quiet = worker.quietMs;
+  if (typeof quiet !== 'number') return false;
+  if (quiet >= STALE_TURN_MS) return true;
+  return flags.wake === 'escalation' && !flags.dispatch && quiet >= RESUME_QUIET_MS;
+}
+
+/**
+ * Fix 9: `next` reads the open questions of a tab that is idle, or busy
+ * with a stale turn (fix 8), so before rule A4 judges it. A worker that
+ * asked with the `ask` command of its preamble ends its turn to wait for
+ * the answer. When Orca holds the question from the coordinator, the tab
+ * looks idle with no report, and A4 would send it the resume text and then
+ * offer to drop it. A stop request needs no fact: rule F12 runs first. A
+ * lost `worker_done` of the tab (fix 7) needs no fact either: activeRule()
+ * makes that tab done before it reads a question, so rule A3 judges it.
+ *
+ * @param {FeatureFacts['flags']} flags
+ * @param {Record<string, any> | null | undefined} active
+ * @param {WorkerFact | null | undefined} worker
+ * @returns {boolean}
+ */
+export function wantsOpenQuestions(flags, active, worker) {
+  if (!active || flags.stop === true || typeof active.runId !== 'string' || active.runId === '') return false;
+  if (lostWakes(flags, active, 'worker_done').length > 0) return false;
+  if (worker?.state === 'idle') return true;
+  return worker?.state === 'busy' && staleTurn(flags, worker);
+}
+
+/**
+ * @param {WorkerFact} worker
+ * @returns {number} The open questions of the tab (fix 9).
+ */
+function openQuestionsOf(worker) {
+  return Array.isArray(worker.questions?.questions) ? worker.questions.questions.length : 0;
+}
+
+/**
+ * Rule A4, fix 9: a tab with a question that has no answer waits on the
+ * coordinator, not on itself. It is not stalled, so it gets no resume send
+ * and no escalation-cap ask. The coordinator shows each question as it
+ * shows a question wake, and answers it with `reply`.
+ *
+ * @param {FeatureFacts} facts
+ * @param {Record<string, any>} active
+ * @param {WorkerFact} worker
+ * @returns {Record<string, any>}
+ */
+function questionAction(facts, active, worker) {
+  const tab = tabName(facts.feature, active);
+  const questions = (worker.questions?.questions ?? []).map(({ id, question, options }) => ({ id, question, options }));
+  const count = questions.length;
+  return {
+    schema: SCHEMA,
+    action: 'question',
+    say: `${capital(tab)} asked ${count === 1 ? 'a question' : `${count} questions`}, and it waits for the answer. Show ${count === 1 ? 'it' : 'them'} to the user.`,
+    questions,
+    feature: facts.feature,
+    stage: active.stage,
+    phase: active.phase ?? null,
+    dispatchId: active.dispatchId,
+    detail: [...worker.detail, ...(worker.questions?.detail ?? [])],
+  };
+}
+
+/**
+ * Rule A4, fix 8: a busy tab with a stale turn is idle with no report. It
+ * gets one resume send (or the report request when the done proof holds),
+ * then the escalation cap asks, as for any idle tab.
+ *
+ * @param {FeatureFacts} facts
+ * @param {Record<string, any>} active
+ * @param {WorkerFact} worker
+ * @returns {Record<string, any>}
+ */
+function staleTurnAction(facts, active, worker) {
+  const tab = tabName(facts.feature, active);
+  const minutes = Math.floor((worker.quietMs ?? 0) / 60000);
+  const quiet = `Orca shows ${tab} in a turn, and its agent sent no status for ${minutes} min, so the turn ended with no report`;
+  const detail = [
+    ...worker.detail,
+    `${capital(quiet)}. Claude Code runs no Stop hook on an interrupted turn, so Orca sends no wake for it.`,
+  ];
+  const check = doneCheck(facts.feature, facts.docs, active);
+  if (escalationsOf(active, check ? check.open.length : null) >= ESCALATION_CAP) {
+    return escalationCapAsk(facts, active, check, { ...worker, detail });
+  }
+  const action =
+    check?.pass === true
+      ? sendAction(facts, active, 'report', [], `${capital(quiet)}, and its work is done. Ask it for its report.`)
+      : sendAction(facts, active, 'escalation', check?.open ?? [], `${capital(quiet)}. Send it the resume text.`);
+  return action.action === 'send' ? { ...action, detail } : action;
+}
+
+/**
+ * Whether the escalation wake for this tab says that its turn ended on an
+ * error (`--stop-reason errored`, from the `stopReason` of the Orca message).
+ * A dsh tab in that state does not resume on its own when its subagent
+ * reports, so rule A4 sends it the resume text in place of the dsh wait.
+ *
+ * @param {FeatureFacts['flags']} flags
+ * @param {Record<string, any>} active
+ * @returns {boolean}
+ */
+function erroredFor(flags, active) {
+  const forThisTab = !flags.dispatch || flags.dispatch === active.dispatchId;
+  if (flags.wake === 'escalation' && forThisTab && flags.stopReason === 'errored') return true;
+  return lostWakes(flags, active, 'escalation').some((wake) => wake.stopReason === 'errored');
 }
 
 /**
@@ -1111,7 +1360,60 @@ function escalatedFor(flags, active) {
  */
 export function wantsDshChild(flags, active, worker) {
   if (!active || active.agent !== 'dsh' || worker?.state !== 'idle' || flags.stop === true) return false;
-  return flags.fresh === true || escalatedFor(flags, active);
+  return flags.fresh === true || judgedFor(flags, active);
+}
+
+/**
+ * Rule A4 reads the undelivered mail (fix 7) of a dsh tab that is idle or
+ * busy, on every call. A dsh lead that started a helper through Orca and
+ * ended its turn waits for the report of the helper, and Orca holds that
+ * report until the next turn of the lead, which never comes. Orca can show
+ * such a tab as busy. Only a dsh tab reads its mail: the delegate term of
+ * every other harness returns in the same turn. A stop request needs no
+ * fact: rule F12 runs first.
+ *
+ * @param {FeatureFacts['flags']} flags
+ * @param {Record<string, any> | null | undefined} active
+ * @param {{ state: WorkerState } | null | undefined} worker
+ * @returns {boolean}
+ */
+export function wantsPendingMail(flags, active, worker) {
+  if (!active || active.agent !== 'dsh' || flags.stop === true) return false;
+  return worker?.state === 'idle' || worker?.state === 'busy';
+}
+
+/**
+ * @param {WorkerFact} worker
+ * @returns {number} The undelivered messages of the tab (fix 7).
+ */
+function pendingMailOf(worker) {
+  return Array.isArray(worker.mail?.messages) ? worker.mail.messages.length : 0;
+}
+
+/**
+ * Rule A4, fix 7: a tab with mail that Orca never delivered. The tab ended
+ * its turn to wait for that mail, so it gets no turn of its own: a wait, a
+ * dsh wait, or a busy wait would wait for ever. The run sends the resume
+ * text (or the report request when the done proof holds) with a line that
+ * names the mail, still bound by ESCALATION_CAP.
+ *
+ * @param {FeatureFacts} facts
+ * @param {Record<string, any>} active
+ * @param {WorkerFact} worker
+ * @returns {Record<string, any>}
+ */
+function pendingMailAction(facts, active, worker) {
+  const tab = tabName(facts.feature, active);
+  const check = doneCheck(facts.feature, facts.docs, active);
+  const mail = pendingMailOf(worker);
+  if (escalationsOf(active, check ? check.open.length : null) >= ESCALATION_CAP) {
+    return escalationCapAsk(facts, active, check, { ...worker, detail: [...worker.detail, ...(worker.mail?.detail ?? [])] });
+  }
+  const what = `${countText(mail, 'message')} to ${tab} ${mail === 1 ? 'is' : 'are'} undelivered`;
+  if (check?.pass === true) {
+    return sendAction(facts, active, 'report', [], `${capital(what)}, and its work is done. Ask it for its report, and name the mail.`, mail);
+  }
+  return sendAction(facts, active, 'escalation', check?.open ?? [], `${capital(what)}. Send it the resume text, and name the mail.`, mail);
 }
 
 /**
@@ -1363,8 +1665,18 @@ function activeRule(facts) {
   if (!active) return null;
 
   const { feature } = facts;
-  const worker = facts.worker ?? { state: 'unknown', detail: [], terminal: null };
+  let worker = facts.worker ?? { state: 'unknown', detail: [], terminal: null };
   const tab = tabName(feature, active);
+  // Fix 7: a worker_done that Orca never delivered to the coordinator is the report of the tab, whatever
+  // state Orca shows for it. The done check of A3 still judges the work.
+  const reported = lostWakes(facts.flags, active, 'worker_done');
+  if (reported.length > 0 && ['idle', 'busy', 'unknown'].includes(worker.state)) {
+    worker = {
+      ...worker,
+      state: 'done',
+      detail: [...worker.detail, `Orca: the worker_done message ${reported[0].id} reached the Run and never reached this tab.`],
+    };
+  }
   const where = [
     `dispatch ${active.dispatchId}`,
     ...(typeof worker.terminal === 'string' && worker.terminal ? [`terminal ${worker.terminal}`] : []),
@@ -1372,6 +1684,13 @@ function activeRule(facts) {
 
   switch (worker.state) {
     case 'busy':
+      // Fix 7: a dsh tab that Orca shows as busy, with mail that it never got, gets the send.
+      if (pendingMailOf(worker) > 0) return pendingMailAction(facts, active, worker);
+      // Fix 8: a turn that ended with no Stop hook (an interrupt) shows as busy for ever. It is idle.
+      // Fix 9: unless it asked a question that has no answer yet: it waits on the coordinator.
+      if (staleTurn(facts.flags, worker)) {
+        return openQuestionsOf(worker) > 0 ? questionAction(facts, active, worker) : staleTurnAction(facts, active, worker);
+      }
       // A1, then A2. A busy tab after an escalation is a false stop, so it waits.
       if (facts.flags.fresh) {
         return stop(
@@ -1453,12 +1772,18 @@ function activeRule(facts) {
     }
 
     case 'idle': {
-      // A4. An idle tab with no escalation for it, on a call that is not fresh, waits.
+      // Fix 9: an idle tab that asked a question with no answer waits on the coordinator. Show the question.
+      if (openQuestionsOf(worker) > 0) return questionAction(facts, active, worker);
+      // Fix 7: an idle tab with mail that it never got gets the send, on any wake. It waits for that mail.
+      if (pendingMailOf(worker) > 0) return pendingMailAction(facts, active, worker);
+      // A4. An idle tab with no escalation for it, on a call that is not fresh, waits. The timer wake (fix 7) judges it.
       const escalated = escalatedFor(facts.flags, active);
-      if (!escalated && !facts.flags.fresh) return waitAction(facts, active);
+      if (!judgedFor(facts.flags, active) && !facts.flags.fresh) return waitAction(facts, active);
       const check = doneCheck(feature, facts.docs, active);
       // Fix 2: a dsh tab with open work whose subagent session still writes waits on that subagent.
-      if (check?.pass === false && active.agent === 'dsh' && worker.child?.active === true) {
+      // Not when the escalation says the turn ended on an error: the result of the subagent does not
+      // restart a turn that failed, and Orca reports no later idle turn, so the run would wait forever.
+      if (check?.pass === false && active.agent === 'dsh' && worker.child?.active === true && !erroredFor(facts.flags, active)) {
         return dshWaitAction(facts, active, worker);
       }
       // Fix 2: open items that dropped since the last escalation send start the count again.
@@ -1582,7 +1907,7 @@ function failedStartRule(facts) {
     '--stage',
     String(failed.stage),
     ...(failed.stage === 'step' && Number.isInteger(failed.step) ? ['--step', String(failed.step)] : []),
-    ...(['phase', 'step', 'verify', 'fix'].includes(failed.stage) && failed.phase ? ['--phase', String(failed.phase)] : []),
+    ...(['phase', 'step', 'verify', 'fix'].includes(failed.stage) && isPhaseNumber(failed.phase) ? ['--phase', String(failed.phase)] : []),
     ...(failed.stage === 'fix' && Number.isInteger(failed.round) && failed.round > 0 ? ['--round', String(failed.round)] : []),
     '--retry',
   ];
@@ -2815,11 +3140,14 @@ function groupWait(waits) {
   if (waits.length === 1) return waits[0];
   const workers = waits.flatMap((action) => action.workers ?? []);
   const tabs = workers.map((worker) => `${tabName(worker.feature, worker)} on ${worker.agent ?? 'its agent'}`);
+  // Fix 7: one backstop timer for the run.
+  const timer = waits.find((action) => action.timer)?.timer;
   return {
     schema: SCHEMA,
     action: 'wait',
     say: `${countText(workers.length, 'tab')} work: ${wordList(tabs)}. Orca wakes this tab when one reports.`,
     workers,
+    ...(timer ? { timer } : {}),
   };
 }
 

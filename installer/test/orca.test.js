@@ -27,6 +27,7 @@ import {
   insertInboxLine,
   isCustomCommand,
   isPhaseComplete,
+  isPhaseNumber,
   newRecord,
   parseHumanTests,
   parseInbox,
@@ -41,15 +42,21 @@ import {
   writeRecord,
 } from '../lib/orca/read.js';
 import {
+  DSH_TIMER_SECONDS,
   DSH_WAIT_SAY,
   ESCALATION_CAP,
+  RESUME_QUIET_MS,
   SEND_BACK_CAP,
+  STALE_TURN_MS,
   START_FAILURE_CAP,
+  UNDELIVERED_MAIL_MS,
   decideFeature,
   escalationsOf,
   reviewPlacement,
   sendCounts,
   wantsDshChild,
+  wantsOpenQuestions,
+  wantsPendingMail,
 } from '../lib/orca/decide.js';
 import {
   DSH_CHILD_ACTIVE_MS,
@@ -61,7 +68,19 @@ import {
   showWorkspace,
   wrapperHome,
 } from '../lib/orca/dsh.js';
-import { docsSpec, fixSpec, inboxSpec, noteText, phaseSpec, planSpec, reviewFixSpec, reviewSpec, sendText, verifySpec } from '../lib/orca/spec.js';
+import {
+  docsSpec,
+  fixSpec,
+  inboxSpec,
+  noteText,
+  phaseSpec,
+  planSpec,
+  reviewFixSpec,
+  reviewSpec,
+  sendText,
+  taskTitleOf,
+  verifySpec,
+} from '../lib/orca/spec.js';
 import {
   MAX_REPLY_BYTES,
   SUBMIT_DELAY_MS,
@@ -82,13 +101,16 @@ import {
   defaultRunner,
   gitCalls,
   normalizeWorker,
+  openQuestions,
   orcaCalls,
   parseEnvelope,
   parsePorcelain,
   receiptTerminal,
   resolveOrcaExecutable,
   sleepSync,
+  turnQuietMs,
   turnStartOf,
+  undeliveredMail,
 } from '../lib/orca/exec.js';
 import { createTempProjectRoot, removeFixture } from './helpers.js';
 
@@ -97,7 +119,7 @@ const BIN = path.join(PLUGIN_ROOT, 'installer', 'bin', 'beast-mode.js');
 const NODE = '/usr/bin/node';
 const FAKE_ORCA = 'fake-orca';
 const NOW = new Date('2026-11-18T07:10:00.000Z');
-const ACTIONS = ['branch', 'start', 'wait', 'send', 'close', 'commit', 'merge', 'ask', 'stop', 'done'];
+const ACTIONS = ['branch', 'start', 'wait', 'send', 'close', 'commit', 'merge', 'ask', 'question', 'stop', 'done'];
 const DEFAULT_CONFIG = { version: 1, orchestration: { stages: { implement: 'dsh' } } };
 
 // ---------------------------------------------------------------------------
@@ -319,6 +341,8 @@ test('config: the defaults fill every key, and verify and docs follow implement'
     commit: 'phase',
     concurrent: true,
     steps: [],
+    backstopSeconds: 600,
+    statusEveryMinutes: 30,
   });
 
   const claude = parseOrcaConfig('{"version":1,"orchestration":{"stages":{"implement":"claude"}}}');
@@ -345,7 +369,33 @@ test('config: the defaults fill every key, and verify and docs follow implement'
     commit: 'feature',
     concurrent: false,
     steps: [],
+    backstopSeconds: 600,
+    statusEveryMinutes: 30,
   });
+});
+
+test('config: backstopSeconds and statusEveryMinutes parse, take their defaults, and refuse a bad value (fix 7)', () => {
+  const set = parseOrcaConfig('{"version":1,"orchestration":{"backstopSeconds":300,"statusEveryMinutes":15}}');
+  assert.equal(set.state, 'valid');
+  assert.deepEqual([set.orchestration.backstopSeconds, set.orchestration.statusEveryMinutes], [300, 15]);
+  // The bounds are inclusive.
+  const edges = parseOrcaConfig('{"version":1,"orchestration":{"backstopSeconds":60,"statusEveryMinutes":1}}');
+  assert.deepEqual([edges.orchestration.backstopSeconds, edges.orchestration.statusEveryMinutes], [60, 1]);
+  // A bad value is a problem with its own code and path, never a silent default.
+  for (const [value, code, at] of [
+    ['{"backstopSeconds":59}', 'backstop-value', '$.orchestration.backstopSeconds'],
+    ['{"backstopSeconds":0}', 'backstop-value', '$.orchestration.backstopSeconds'],
+    ['{"backstopSeconds":600.5}', 'backstop-value', '$.orchestration.backstopSeconds'],
+    ['{"backstopSeconds":"600"}', 'backstop-value', '$.orchestration.backstopSeconds'],
+    ['{"backstopSeconds":86401}', 'backstop-value', '$.orchestration.backstopSeconds'],
+    ['{"statusEveryMinutes":0}', 'status-every-value', '$.orchestration.statusEveryMinutes'],
+    ['{"statusEveryMinutes":-5}', 'status-every-value', '$.orchestration.statusEveryMinutes'],
+    ['{"statusEveryMinutes":null}', 'status-every-value', '$.orchestration.statusEveryMinutes'],
+  ]) {
+    const read = parseOrcaConfig(`{"version":1,"orchestration":${value}}`);
+    assert.equal(read.state, 'invalid', value);
+    assert.deepEqual(read.problems, [{ code, at }], value);
+  }
 });
 
 test('config: a file with no orchestration key is valid, and an unknown top-level key stays', () => {
@@ -1044,6 +1094,9 @@ function sharedParts(feature, tag) {
     `Start the question with \`[${tag}]\`, then end your turn.`,
     'is an inbox item of section 12 rule 3.',
     'Every agent prompt that you write holds the inbox sentence of',
+    '- Start no Orca worker and no Orca task of your own. Delegate only by the term "delegate to the',
+    '  `<name>` agent" of `.beast-mode/harness.md`, in the form whose call returns the result of the agent',
+    '  in the same turn. Never end your turn while an agent that you started still works.',
     '- Touch no shared or production environment.',
     'Done proof: run `worker_done` from your worker preamble',
   ];
@@ -1204,6 +1257,16 @@ test('spec: the send texts and the note text keep the items word for word, name 
     [sendText({ label, reason: 'open-tasks', open, spec }), 'Open items: Phase 2 of demo', ['- Write the hello file\n', '- CR-2: `hello` reads "hi" & $HOME\n']],
     [sendText({ label, reason: 'escalation', open, spec }), 'Resume: Phase 2 of demo', ['by your spec, `.beast-mode/briefs/demo/orca-phase-2.md`.', 'run the `ask` command']],
     [sendText({ label, reason: 'report', open: [], spec }), 'Report: Phase 2 of demo', ['the done proof of your spec holds.']],
+    [
+      sendText({ label, reason: 'escalation', open, spec, mail: 2, dispatchId: 'disp-1' }),
+      'Resume: Phase 2 of demo',
+      [
+        'You have unread orchestration mail: 2 messages that Orca has not delivered to you.',
+        'Read it now with the `check` command of your worker preamble, and act on it.',
+        'list the mail with the `inbox` command of Orca for `dispatch:disp-1`, with `--full`.',
+      ],
+    ],
+    [sendText({ label, reason: 'report', open: [], spec, mail: 1, dispatchId: 'disp-1' }), 'Report: Phase 2 of demo', ['You have unread orchestration mail: 1 message that']],
     [sendText({ label, reason: 'missing-verdict', open: [], spec }), 'Verdict: Phase 2 of demo', ['Line 1 is `PASS`, `FAIL`, or `BLOCKED`.']],
     [
       noteText({ feature: 'editor/ux', kind: 'change small', text: 'Move the button.\nKeep the icon.' }),
@@ -1390,12 +1453,17 @@ test('exec: the argument builders are pure, and each names its tool, its argumen
     timeoutMs: 30000,
     change: false,
   });
-  assert.deepEqual(orcaCalls.workerStart({ specFile: '/p/orca-phase-1.md', agent: 'dsh' }), {
+  // A first start passes the Task title (fix 5). No title gives no argument.
+  assert.deepEqual(orcaCalls.workerStart({ specFile: '/p/orca-phase-1.md', agent: 'dsh', title: 'demo: Phase 1 implement' }), {
     tool: 'orca',
-    args: ['orchestration', 'worker-start', '--spec-file', '/p/orca-phase-1.md', '--worktree', 'current', '--agent', 'dsh', '--timeout-ms', '120000', '--json'],
+    args: [
+      'orchestration', 'worker-start', '--spec-file', '/p/orca-phase-1.md', '--task-title', 'demo: Phase 1 implement',
+      '--worktree', 'current', '--agent', 'dsh', '--timeout-ms', '120000', '--json',
+    ],
     timeoutMs: 150000,
     change: true,
   });
+  assert.ok(!orcaCalls.workerStart({ specFile: '/p/orca-phase-1.md', agent: 'dsh' }).args.includes('--task-title'));
   const retry = orcaCalls.workerRetry({ taskId: 'task-9', retryOf: 'disp-9', agent: 'claude' });
   assert.deepEqual(retry.args, [
     'orchestration',
@@ -1716,6 +1784,8 @@ test('steps: one phase walks branch, start, wait, close, and commit with the exa
       'worker-start',
       '--spec-file',
       spec,
+      '--task-title',
+      'demo: Phase 1 implement',
       '--worktree',
       'current',
       '--agent',
@@ -1734,10 +1804,12 @@ test('steps: one phase walks branch, start, wait, close, and commit with the exa
     assert.deepEqual([code, json.ok, json.code], [0, false, 'tab-active']);
     assert.equal(fake.orca().length, before);
 
-    // 6. next reads worker-show: a busy tab waits, and a fresh call stops.
+    // 6. next reads worker-show: a busy tab waits, and a fresh call stops. A dsh tab also reads its mail (fix 7),
+    // and a failed mail read (no fake answer here) is no mail.
     ({ json } = step(['next', '--feature', 'demo']));
     assertAction(json, 'wait');
-    assert.deepEqual(fake.orca().at(-1), ['orchestration', 'worker-show', '--dispatch', 'disp-1', '--json']);
+    assert.deepEqual(fake.orca().at(-2), ['orchestration', 'worker-show', '--dispatch', 'disp-1', '--json']);
+    assert.deepEqual(fake.orca().at(-1), ['orchestration', 'inbox', '--terminal', 'dispatch:disp-1', '--limit', '50', '--full', '--json']);
     assertStop(step(['next', '--feature', 'demo', '--fresh']).json, 'tab-still-runs');
 
     // 7. The tab works and reports: the phase closes, with the slice block.
@@ -2166,7 +2238,7 @@ test('cli: orca reaches its steps through main, and a usage error exits 2 with t
       ['orca', 'next'],
       ['orca', 'next', '--feature', 'demo', '--not-a-flag'],
       ['orca', 'next', '--feature'],
-      ['orca', 'start', '--feature', 'demo', '--phase', '0'],
+      ['orca', 'start', '--feature', 'demo', '--phase', '1.5'],
       ['orca', 'commit', '--feature', 'demo'],
       ['orca', 'next', '--feature', 'demo', 'extra'],
       ['orca', 'next', '--feature', 'demo', '--project', path.join(root, 'missing')],
@@ -2721,10 +2793,12 @@ function walk(root, fake, work, until = ['done']) {
         'demo',
         '--stage',
         json.stage,
-        ...(json.phase ? ['--phase', String(json.phase)] : []),
+        ...(json.stage === 'step' ? ['--step', String(json.step)] : []),
+        // Phase 0 is a real phase, so the walk tests the type, never the truth of the number.
+        ...(typeof json.phase === 'number' ? ['--phase', String(json.phase)] : []),
         ...(json.round ? ['--round', String(json.round)] : []),
       ];
-      trail.push(`start ${json.stage}${json.phase ? ` ${json.phase}` : ''}`);
+      trail.push(`start ${json.stage}${typeof json.phase === 'number' ? ` ${json.phase}` : ''}`);
       starts += 1;
       fake.answers['worker-start'] = envelope({ runId: 'run-1', taskId: `task-${starts}`, dispatchId: `disp-${starts}`, state: 'ready' });
       // The submit loop of a dsh start reads the new tab one time (fix 1).
@@ -2734,7 +2808,7 @@ function walk(root, fake, work, until = ['done']) {
       trail.push(`close ${json.stage}`);
     } else if (json.action === 'commit') {
       args = ['commit', '--feature', 'demo', '--point', json.point, ...(json.point === 'phase' ? ['--phase', String(json.phase)] : [])];
-      trail.push(`commit ${json.point}${json.phase ? ` ${json.phase}` : ''}`);
+      trail.push(`commit ${json.point}${typeof json.phase === 'number' ? ` ${json.phase}` : ''}`);
     } else {
       assert.fail(`the walk got the action ${json.action}: ${JSON.stringify(json)}`);
     }
@@ -3327,7 +3401,7 @@ test('note: a running tab gets orchestration send with the subject, and the text
   const root = makeProject();
   try {
     writeRecord(root, 'demo', recordWith().record);
-    const fake = fakeRunner({ send: envelope({ message: { id: 'msg_1' } }) });
+    const fake = fakeRunner({ 'worker-show': turnStarted('disp-1'), send: envelope({ message: { id: 'msg_1' } }) });
     const file = path.join(root, '.beast-mode', 'briefs', 'orca', 'note.md');
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const text = 'The save fails on "Enter"; it\'s `broken` & $HOME stays.\nA second line.';
@@ -3350,11 +3424,14 @@ test('note: a running tab gets orchestration send with the subject, and the text
     assert.deepEqual([json.kind, args[5], args.length], ['change small', 'User message (change small)', 8]);
     assert.ok(args[6].startsWith('--body=--verbose output is too long\n\n---\n'), args[6]);
 
-    // A send to a finished worker starts a follow-up, and its dispatch replaces the active id (fact O9).
+    // A worker that settles between the show and the send gets a follow-up, and its dispatch replaces the
+    // active id (fact O9). The record marks it as the follow-up of a note, so a close keeps it while it works.
     fake.answers.send = envelope({ runId: 'run-1', taskId: 'task-f', dispatchId: 'disp-f', state: 'ready' });
     json = note('note');
     assert.deepEqual([json.followUp, json.dispatchId], [true, 'disp-f']);
-    assert.equal(readRecord(root, 'demo').record.active.dispatchId, 'disp-f');
+    const active = readRecord(root, 'demo').record.active;
+    assert.equal(active.dispatchId, 'disp-f');
+    assert.deepEqual(active.noteFollowUp, { dispatchId: 'disp-f', of: 'disp-1' });
   } finally {
     removeFixture(root);
   }
@@ -3401,7 +3478,7 @@ test('note: an absent inbox.md is made from the template with the feature name, 
     fs.mkdirSync(path.join(root, '.beast-mode', 'templates'), { recursive: true });
     fs.writeFileSync(path.join(root, '.beast-mode', 'templates', 'inbox.md'), template);
     writeRecord(root, 'demo', recordWith().record);
-    const fake = fakeRunner({ send: NOT_FOUND });
+    const fake = fakeRunner({ 'worker-show': turnStarted('disp-1'), send: NOT_FOUND });
     const file = path.join(root, 'note.md');
     fs.writeFileSync(file, 'keep the old icon\n');
     const json = orcaStep(root, ['note', '--feature', 'demo', '--kind', 'note', '--text-file', file], { runner: fake.runner }).json;
@@ -3420,6 +3497,99 @@ test('note: an absent inbox.md is made from the template with the feature name, 
     const again = orcaStep(root, ['note', '--feature', 'demo', '--kind', 'note', '--text-file', file], { runner: fake.runner }).json;
     assert.deepEqual([again.ok, again.delivery, again.created, again.detail], [true, 'inbox', true, undefined]);
     assert.equal(fs.readFileSync(inboxOf(root), 'utf8'), expected);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('note: a tab that has ended its work gets no send, and the message goes into the inbox', () => {
+  // The live case: the step tab "/review-pr" wrote its FAIL verdict and sent worker_done, so Orca settled its
+  // dispatch, and the run waited on the step-failed ask. A send there started a follow-up dispatch, and the
+  // go-on line of the ask (close --override) then closed the tab while the follow-up worked.
+  for (const show of [
+    envelope({ dispatchId: 'disp-1', state: 'succeeded', liveness: 'live', activity: 'idle' }),
+    envelope({ dispatchId: 'disp-1', state: 'failed' }),
+    envelope({ dispatchId: 'disp-1', state: 'stopped' }),
+    NOT_FOUND,
+  ]) {
+    const root = makeProject();
+    try {
+      writeRecord(root, 'demo', recordWith().record);
+      const fake = fakeRunner({ 'worker-show': show, send: envelope({ runId: 'run-1', taskId: 'task-f', dispatchId: 'disp-f', state: 'ready' }) });
+      const file = path.join(root, 'note.md');
+      fs.writeFileSync(file, 'the import answers 500 on a deep upload\n');
+      const json = orcaStep(root, ['note', '--feature', 'demo', '--kind', 'bug', '--text-file', file], { runner: fake.runner }).json;
+      assert.deepEqual([json.ok, json.delivery, json.settled], [true, 'inbox', true], JSON.stringify(json));
+      assert.match(json.say, /\. The tab has ended its work, so it got no send\.$/);
+      assert.equal(json.detail[0], 'The Phase 1 tab of demo has ended its work, so the message went into the inbox.');
+      assert.deepEqual(fake.orca(), [['orchestration', 'worker-show', '--dispatch', 'disp-1', '--json']], 'no send');
+      assert.ok(fs.readFileSync(inboxOf(root), 'utf8').includes(`- [ ] bug ${localStamp(NOW)} | the import answers 500 on a deep upload`));
+      assert.equal(readRecord(root, 'demo').record.active.dispatchId, 'disp-1', 'the record keeps the tab for its ask or close');
+    } finally {
+      removeFixture(root);
+    }
+  }
+});
+
+test('note: a tab whose state Orca cannot read still gets the send, and an idle tab too', () => {
+  for (const show of [
+    envelope(null, { ok: false, status: 1 }),
+    envelope({ dispatchId: 'disp-1', state: 'ready', liveness: 'live', activity: 'idle' }),
+  ]) {
+    const root = makeProject();
+    try {
+      writeRecord(root, 'demo', recordWith().record);
+      const fake = fakeRunner({ 'worker-show': show, send: envelope({ message: { id: 'msg_1' } }) });
+      const file = path.join(root, 'note.md');
+      fs.writeFileSync(file, 'keep the old icon\n');
+      const json = orcaStep(root, ['note', '--feature', 'demo', '--kind', 'note', '--text-file', file], { runner: fake.runner }).json;
+      assert.deepEqual([json.ok, json.delivery, json.followUp], [true, 'send', false]);
+      assert.equal(fake.orca().at(-1)[1], 'send');
+    } finally {
+      removeFixture(root);
+    }
+  }
+});
+
+test('close: a follow-up that a note started is kept while it works, and --discard or its report lets the close go on', () => {
+  const root = makeProject();
+  try {
+    const followUp = { dispatchId: 'disp-f', taskId: 'task-f', noteFollowUp: { dispatchId: 'disp-f', of: 'disp-1' } };
+    writeRecord(root, 'demo', recordWith(followUp).record);
+    const notSettled = {
+      status: 1,
+      signal: null,
+      stdout: `${JSON.stringify({ ok: false, error: { code: 'dispatch_inactive', message: 'Dispatch disp-f is ready; only a settled worker can release. Use worker-stop to cancel an active worker.' } })}\n`,
+      stderr: '',
+      error: null,
+    };
+    const fake = fakeRunner({ 'worker-release': notSettled });
+    const step = (args) => orcaStep(root, args, { runner: fake.runner }).json;
+
+    let json = step(['close', '--feature', 'demo']);
+    assert.deepEqual([json.ok, json.code, json.dispatchId], [false, 'follow-up-working', 'disp-f'], JSON.stringify(json));
+    assert.equal(json.say, 'The follow-up disp-f that a user note started for the Phase 1 tab of demo still works.');
+    assert.ok(json.detail.includes('Close it with "--discard" to drop it anyway.'));
+    assert.equal(readRecord(root, 'demo').record.active.dispatchId, 'disp-f', 'the record keeps the follow-up');
+
+    // The follow-up reported, so Orca releases it, and the close clears the record.
+    fake.answers['worker-release'] = envelope({ dispatchId: 'disp-f', state: 'already_released', processAction: 'none' });
+    json = step(['close', '--feature', 'demo']);
+    assert.equal(json.ok, true, JSON.stringify(json));
+    assert.equal(readRecord(root, 'demo').record.active, null);
+
+    // --discard drops a follow-up that still works, as before.
+    writeRecord(root, 'demo', recordWith(followUp).record);
+    fake.answers['worker-release'] = notSettled;
+    json = step(['close', '--feature', 'demo', '--discard']);
+    assert.deepEqual([json.ok, json.discard], [true, true]);
+    assert.equal(readRecord(root, 'demo').record.active, null);
+
+    // A tab that no note followed up keeps the old rule: a refused release never blocks the clear.
+    writeRecord(root, 'demo', recordWith().record);
+    json = step(['close', '--feature', 'demo']);
+    assert.equal(json.ok, true);
+    assert.equal(readRecord(root, 'demo').record.active, null);
   } finally {
     removeFixture(root);
   }
@@ -3647,6 +3817,8 @@ test('note: note and send refuse a bad kind, a bad text file, a missing feature,
 // ---------------------------------------------------------------------------
 
 const COMMAND_CONFIG = { version: 1, agents: { dsh: { command: 'dsh-personal .' } }, orchestration: { stages: { implement: 'dsh' } } };
+/** The answer of `terminal rename` (fix 6). */
+const RENAMED = envelope({ terminal: { handle: 'term-7', title: 'demo: Phase 1 implement' } });
 const TERMINAL_7 = envelope({ terminal: { handle: 'term-7', worktreeId: 'repo-1::/tmp/demo', title: null } });
 const IDLE_7 = envelope({ wait: { handle: 'term-7', condition: 'tui-idle', satisfied: true, status: 'running', exitCode: null } });
 const STARTED_7 = envelope({ runId: 'run-7', taskId: 'task-7', dispatchId: 'disp-7', state: 'ready' });
@@ -3667,6 +3839,8 @@ function commandFake(answers) {
     if (command === 'git') return defaultRunner(command, args, options);
     assert.equal(command, FAKE_ORCA, `the runner got the unexpected command ${command}`);
     const key = args[0] === 'orchestration' ? args[1] : ['terminal', 'worktree'].includes(args[0]) ? `${args[0]} ${args[1]}` : args[0];
+    // The rename after a start (fix 6) answers ok unless a test scripts it.
+    if (key === 'terminal rename' && !answers[key]) return RENAMED;
     assert.ok(answers[key], `no fake Orca answer for: ${args.join(' ')}`);
     return answers[key];
   };
@@ -3709,13 +3883,15 @@ test('command: a phase start with a project command runs terminal create, the tu
       [
         ['terminal', 'create', '--worktree', 'current', '--command', 'dsh-personal .', '--json'],
         ['terminal', 'wait', '--terminal', 'term-7', '--for', 'tui-idle', '--timeout-ms', '60000', '--json'],
-        ['orchestration', 'worker-start', '--spec-file', spec, '--terminal', 'term-7', '--worktree', 'current', '--json'],
+        ['orchestration', 'worker-start', '--spec-file', spec, '--task-title', 'demo: Phase 1 implement', '--terminal', 'term-7', '--worktree', 'current', '--json'],
         // The submit loop of the dsh tab reads the tab one time, and the turn runs (fix 1).
         ['orchestration', 'worker-show', '--dispatch', 'disp-7', '--json'],
+        // The rename of the tab runs after the submit loop (fix 6).
+        ['terminal', 'rename', '--terminal', 'term-7', '--title', 'demo: Phase 1 implement', '--json'],
       ]
     );
-    assert.deepEqual(calls.map((entry) => entry.timeoutMs), [30000, 75000, 150000, 30000]);
-    for (const args of fake.orca()) {
+    assert.deepEqual(calls.map((entry) => entry.timeoutMs), [30000, 75000, 150000, 30000, 30000]);
+    for (const args of fake.orca().filter((entry) => entry[1] !== 'rename')) {
       assert.ok(!args.includes('--title'), `no --title: ${args.join(' ')}`);
       assert.ok(!args.includes('--agent'), `the command path names no agent: ${args.join(' ')}`);
       assert.ok(!args.includes('dsh-personal'), 'the command stays one argument');
@@ -3752,6 +3928,7 @@ test('command: a wait that times out, or ends unsatisfied, still runs worker-sta
         ['terminal', 'wait'],
         ['orchestration', 'worker-start'],
         ['orchestration', 'worker-show'],
+        ['terminal', 'rename'],
       ]);
       assert.deepEqual([json.ok, json.readyState, json.dispatchId], [true, 'ready-unconfirmed', 'disp-7'], JSON.stringify(json));
       assert.match(json.say, /Orca did not confirm that the tab was ready\.$/);
@@ -3794,6 +3971,8 @@ test('command: a failed start names the terminal and closes nothing, its retry o
       ['terminal', 'wait', '--terminal', 'term-8', '--for', 'tui-idle', '--timeout-ms', '60000', '--json'],
       ['orchestration', 'worker-start', '--task', 'task-9', '--retry-of', 'disp-9', '--terminal', 'term-8', '--worktree', 'current', '--json'],
       ['orchestration', 'worker-show', '--dispatch', 'disp-10', '--json'],
+      // A retry renames its new tab too (fix 6).
+      ['terminal', 'rename', '--terminal', 'term-8', '--title', 'demo: Phase 1 implement', '--json'],
     ]);
     assert.deepEqual([retried.ok, retried.retry, retried.terminal, retried.dispatchId], [true, true, 'term-8', 'disp-10']);
   } finally {
@@ -3884,7 +4063,19 @@ test('close tab: an already_released answer closes the own terminal too, and the
   }
 });
 
-test('close tab: a release that Orca owned (requested) or refused closes no terminal', () => {
+test('close tab: a release that Orca owned (requested) closes no terminal and says nothing of the tab', () => {
+  const root = commandProject();
+  try {
+    const { fake, before } = startedCommandTab(root, { 'worker-release': envelope({ dispatchId: 'disp-7', state: 'requested' }) });
+    const { json } = orcaStep(root, ['close', '--feature', 'demo'], { runner: fake.runner });
+    assert.deepEqual(fake.orca().slice(before), [RELEASE_7]);
+    assert.equal(json.terminalClosed, undefined);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('close tab: a failed release of an own terminal runs no terminal close and says the tab stays open (fix 5)', () => {
   const refusedRelease = {
     status: 1,
     signal: null,
@@ -3892,16 +4083,16 @@ test('close tab: a release that Orca owned (requested) or refused closes no term
     stderr: '',
     error: null,
   };
-  for (const release of [envelope({ dispatchId: 'disp-7', state: 'requested' }), refusedRelease]) {
-    const root = commandProject();
-    try {
-      const { fake, before } = startedCommandTab(root, { 'worker-release': release });
-      const { json } = orcaStep(root, ['close', '--feature', 'demo'], { runner: fake.runner });
-      assert.deepEqual(fake.orca().slice(before), [RELEASE_7]);
-      assert.equal(json.terminalClosed, undefined);
-    } finally {
-      removeFixture(root);
-    }
+  const root = commandProject();
+  try {
+    const { fake, before } = startedCommandTab(root, { 'worker-release': refusedRelease });
+    const { json } = orcaStep(root, ['close', '--feature', 'demo'], { runner: fake.runner });
+    assert.deepEqual(fake.orca().slice(before), [RELEASE_7], 'no terminal close: the worker can still run');
+    assert.equal(json.ok, true);
+    assert.equal(json.terminalClosed, false);
+    assert.match(json.say, /The tab term-7 stays open: close it in Orca\./);
+  } finally {
+    removeFixture(root);
   }
 });
 
@@ -4021,6 +4212,8 @@ const SHOW_1 = ['orchestration', 'worker-show', '--dispatch', 'disp-1', '--json'
 const ENTER_1 = ['terminal', 'send', '--terminal', 'term-1', '--enter', '--json'];
 /** The answer of a bare Enter that Orca took. */
 const ENTER_OK = envelope({ send: { handle: 'term-1', accepted: true, bytesWritten: 1 } });
+/** The rename of the tab in term-1 after a start (fix 6): the Task title of Phase 1. */
+const RENAME_1 = ['terminal', 'rename', '--terminal', 'term-1', '--title', 'demo: Phase 1 implement', '--json'];
 /** A worker-start receipt of the agent path that names the terminal of the agent. */
 const RECEIPT_1 = envelope({ runId: 'run-1', taskId: 'task-1', dispatchId: 'disp-1', state: 'ready', terminal: 'term-1' });
 
@@ -4158,7 +4351,7 @@ test('dsh submit: the turn starts after two Enter presses, with the exact termin
   try {
     const fake = submitFake({ 'worker-start': RECEIPT_1, 'terminal send': ENTER_OK }, [preTurn(), preTurn(), turnStarted('disp-1')]);
     const { code, json, sleeps, after } = submitStart(root, fake.runner);
-    assert.deepEqual(after, [SHOW_1, ENTER_1, SHOW_1, ENTER_1, SHOW_1]);
+    assert.deepEqual(after, [SHOW_1, ENTER_1, SHOW_1, ENTER_1, SHOW_1, RENAME_1], 'the rename runs after the submit loop');
     assert.deepEqual(fake.calls.filter((entry) => isEnter(entry.args)).map((entry) => entry.timeoutMs), [30000, 30000]);
     assert.deepEqual(sleeps, [SUBMIT_DELAY_MS, SUBMIT_DELAY_MS]);
     assert.deepEqual([code, json.ok, json.path, json.dispatchId, json.submit, json.enters], [0, true, 'agent', 'disp-1', 'confirmed', 2]);
@@ -4181,7 +4374,7 @@ test('dsh submit: a turn that already runs, a settled worker, and a question in 
     try {
       const fake = submitFake({ 'worker-start': RECEIPT_1 }, [shown]);
       const { json, sleeps, after } = submitStart(root, fake.runner);
-      assert.deepEqual(after, [SHOW_1], 'one read, and no Enter');
+      assert.deepEqual(after, [SHOW_1, RENAME_1], 'one read, and no Enter, then the rename');
       assert.deepEqual([json.ok, json.submit, json.enters, sleeps], [true, 'confirmed', 0, []], JSON.stringify(json));
     } finally {
       removeFixture(root);
@@ -4197,7 +4390,8 @@ test('dsh submit: a turn that never starts ends unconfirmed after a bounded coun
     const fake = submitFake({ 'worker-start': RECEIPT_1, 'terminal send': ENTER_OK }, [preTurn()]);
     const { code, json, sleeps, after } = submitStart(root, fake.runner);
     assert.equal(after.filter(isEnter).length, SUBMIT_MAX_ENTERS);
-    assert.equal(after.length, 2 * SUBMIT_MAX_ENTERS + 1, 'one read before each Enter, and one read after the last wait');
+    assert.equal(after.length, 2 * SUBMIT_MAX_ENTERS + 2, 'one read before each Enter, one read after the last wait, and the rename');
+    assert.deepEqual(after.at(-1), RENAME_1);
     assert.equal(sleeps.length, SUBMIT_MAX_ENTERS);
     assert.deepEqual([code, json.ok, json.submit, json.enters], [0, true, 'unconfirmed', SUBMIT_MAX_ENTERS]);
     assert.ok(json.say.endsWith(` ${SUBMIT_UNCONFIRMED_SAY}`), json.say);
@@ -4232,7 +4426,7 @@ test('dsh submit: a tab that waits on a person gets no Enter, also after an earl
   try {
     const fake = submitFake({ 'worker-start': RECEIPT_1, 'terminal send': ENTER_OK }, [person]);
     const { json, sleeps, after } = submitStart(root, fake.runner);
-    assert.deepEqual([after, sleeps], [[SHOW_1], []], 'no Enter on a tab that waits on a person');
+    assert.deepEqual([after, sleeps], [[SHOW_1, RENAME_1], []], 'no Enter on a tab that waits on a person');
     assert.deepEqual([json.ok, json.submit, json.enters], [true, 'unconfirmed', 0]);
     assert.ok(json.say.endsWith(SUBMIT_UNCONFIRMED_SAY), json.say);
     assert.ok(json.detail.includes('Orca: the tab waits on a person: trust this folder (via screen)'), JSON.stringify(json.detail));
@@ -4245,7 +4439,7 @@ test('dsh submit: a tab that waits on a person gets no Enter, also after an earl
   try {
     const fake = submitFake({ 'worker-start': RECEIPT_1, 'terminal send': ENTER_OK }, [preTurn(), person]);
     const { json, after } = submitStart(root, fake.runner);
-    assert.deepEqual(after, [SHOW_1, ENTER_1, SHOW_1]);
+    assert.deepEqual(after, [SHOW_1, ENTER_1, SHOW_1, RENAME_1]);
     assert.deepEqual([json.submit, json.enters], ['unconfirmed', 1]);
     assert.ok(json.detail.includes('The tab waits on a person, so the step stopped after 1 Enter press.'), JSON.stringify(json.detail));
   } finally {
@@ -4265,10 +4459,10 @@ test('dsh submit: a failed Enter or a failed read ends the loop unconfirmed, and
   try {
     const fake = submitFake({ 'worker-start': RECEIPT_1, 'terminal send': refusedEnter }, [preTurn()]);
     const { code, json, sleeps, all, after } = submitStart(root, fake.runner);
-    assert.deepEqual([after, sleeps], [[SHOW_1, ENTER_1], []], 'one Enter: a failed Enter never runs again');
+    assert.deepEqual([after, sleeps], [[SHOW_1, ENTER_1, RENAME_1], []], 'one Enter: a failed Enter never runs again');
     assert.deepEqual([code, json.ok, json.submit, json.enters], [0, true, 'unconfirmed', 0]);
     assert.deepEqual(json.detail, ['fake-orca terminal send: terminal_not_found: No terminal term-1.', 'The Enter failed after 0 Enter presses.']);
-    assert.ok(!all.some((args) => args[0] === 'terminal' && args[1] !== 'send'), 'the agent path opens and closes no terminal');
+    assert.ok(!all.some((args) => args[0] === 'terminal' && args[1] !== 'send' && args[1] !== 'rename'), 'the agent path opens and closes no terminal');
     assert.ok(!all.some((args) => args[1] === 'worker-release'), 'the tab stays open');
     assert.equal(readRecord(root, 'demo').record.active.dispatchId, 'disp-1');
   } finally {
@@ -4279,7 +4473,7 @@ test('dsh submit: a failed Enter or a failed read ends the loop unconfirmed, and
   try {
     const fake = submitFake({ 'worker-start': RECEIPT_1, 'terminal send': ENTER_OK }, [NOT_FOUND]);
     const { code, json, after } = submitStart(root, fake.runner);
-    assert.deepEqual(after, [SHOW_1], 'a failed read presses nothing');
+    assert.deepEqual(after, [SHOW_1, RENAME_1], 'a failed read presses nothing');
     assert.deepEqual([code, json.ok, json.submit, json.enters], [0, true, 'unconfirmed', 0]);
     assert.deepEqual(json.detail, ['fake-orca orchestration worker-show: dispatch_not_found: No dispatch disp-1.']);
   } finally {
@@ -4299,10 +4493,12 @@ test('dsh submit: the command path presses Enter in the terminal of the command'
     assert.deepEqual(all, [
       ['terminal', 'create', '--worktree', 'current', '--command', 'dsh-personal .', '--json'],
       ['terminal', 'wait', '--terminal', 'term-7', '--for', 'tui-idle', '--timeout-ms', '60000', '--json'],
-      ['orchestration', 'worker-start', '--spec-file', spec, '--terminal', 'term-7', '--worktree', 'current', '--json'],
+      ['orchestration', 'worker-start', '--spec-file', spec, '--task-title', 'demo: Phase 1 implement', '--terminal', 'term-7', '--worktree', 'current', '--json'],
       show,
       ['terminal', 'send', '--terminal', 'term-7', '--enter', '--json'],
       show,
+      // The rename runs after the Enter loop, in the terminal of the command (fix 6).
+      ['terminal', 'rename', '--terminal', 'term-7', '--title', 'demo: Phase 1 implement', '--json'],
     ]);
     assert.deepEqual(sleeps, [SUBMIT_DELAY_MS]);
     assert.deepEqual(
@@ -4316,19 +4512,21 @@ test('dsh submit: the command path presses Enter in the terminal of the command'
 
 test('dsh submit: the agent path presses Enter in the terminal of the receipt, else in the terminal of the view, and with no terminal presses nothing', () => {
   const cases = [
-    { receipt: RECEIPT_1, view: { terminal: 'term-9' }, enter: ENTER_1 },
+    { receipt: RECEIPT_1, view: { terminal: 'term-9' }, enter: ENTER_1, rename: RENAME_1 },
     {
       receipt: envelope({ runId: 'run-1', taskId: 'task-1', dispatchId: 'disp-1', state: 'ready' }),
       view: { terminal: 'term-9' },
       enter: ['terminal', 'send', '--terminal', 'term-9', '--enter', '--json'],
+      // The tab of the view is the tab to rename, when the receipt names none (fix 6).
+      rename: ['terminal', 'rename', '--terminal', 'term-9', '--title', 'demo: Phase 1 implement', '--json'],
     },
   ];
-  for (const { receipt, view, enter } of cases) {
+  for (const { receipt, view, enter, rename } of cases) {
     const root = submitProject();
     try {
       const fake = submitFake({ 'worker-start': receipt, 'terminal send': ENTER_OK }, [preTurn(view), turnStarted('disp-1')]);
       const { json, after } = submitStart(root, fake.runner);
-      assert.deepEqual(after, [SHOW_1, enter, SHOW_1]);
+      assert.deepEqual(after, [SHOW_1, enter, SHOW_1, rename]);
       assert.deepEqual([json.ok, json.path, json.submit, json.enters], [true, 'agent', 'confirmed', 1]);
     } finally {
       removeFixture(root);
@@ -4340,7 +4538,7 @@ test('dsh submit: the agent path presses Enter in the terminal of the receipt, e
     const bare = envelope({ runId: 'run-1', taskId: 'task-1', dispatchId: 'disp-1', state: 'ready' });
     const fake = submitFake({ 'worker-start': bare, 'terminal send': ENTER_OK }, [preTurn()]);
     const { json, after } = submitStart(root, fake.runner);
-    assert.deepEqual(after, [SHOW_1], 'no terminal, so no Enter');
+    assert.deepEqual(after, [SHOW_1], 'no terminal, so no Enter and no rename');
     assert.deepEqual([json.ok, json.submit, json.enters], [true, 'unconfirmed', 0]);
     assert.equal(json.detail.at(-1), 'Orca named no terminal of the tab, so the step pressed no Enter.');
   } finally {
@@ -4357,7 +4555,11 @@ test('dsh submit: a claude stage runs no submit loop on the agent path and on th
     const fake = submitFake({ 'worker-start': RECEIPT_1 }, []);
     const { json, all, sleeps } = submitStart(root, fake.runner);
     const spec = path.join(root, '.beast-mode', 'briefs', 'demo', 'orca-phase-1.md');
-    assert.deepEqual(all, [['orchestration', 'worker-start', '--spec-file', spec, '--worktree', 'current', '--agent', 'claude', '--timeout-ms', '120000', '--json']]);
+    assert.deepEqual(all, [
+      ['orchestration', 'worker-start', '--spec-file', spec, '--task-title', 'demo: Phase 1 implement', '--worktree', 'current', '--agent', 'claude', '--timeout-ms', '120000', '--json'],
+      // The tab of a claude stage gets the rename too, with no submit loop (fix 6).
+      RENAME_1,
+    ]);
     assert.deepEqual([json.ok, json.agent, 'submit' in json, 'enters' in json, sleeps], [true, 'claude', false, false, []], JSON.stringify(json));
   } finally {
     removeFixture(root);
@@ -4367,8 +4569,147 @@ test('dsh submit: a claude stage runs no submit loop on the agent path and on th
   try {
     const fake = submitFake({ 'terminal create': TERMINAL_7, 'terminal wait': IDLE_7, 'worker-start': STARTED_7 }, []);
     const { json, all } = submitStart(root, fake.runner);
-    assert.deepEqual(all.map((args) => args.slice(0, 2)), [['terminal', 'create'], ['terminal', 'wait'], ['orchestration', 'worker-start']]);
+    assert.deepEqual(all.map((args) => args.slice(0, 2)), [['terminal', 'create'], ['terminal', 'wait'], ['orchestration', 'worker-start'], ['terminal', 'rename']]);
     assert.deepEqual([json.ok, json.path, json.agent, 'submit' in json], [true, 'command', 'claude', false], JSON.stringify(json));
+  } finally {
+    removeFixture(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 6: the tab of a started worker gets the Task title with `terminal rename`
+// ---------------------------------------------------------------------------
+
+/** A project config whose implement stage runs claude: no submit loop, so the calls after the start are the rename only. */
+const CLAUDE_STAGE = { version: 1, orchestration: { stages: { implement: 'claude' } } };
+/** The same config with a project command for claude, so the start takes the command path. */
+const CLAUDE_COMMAND = { version: 1, agents: { claude: { command: 'claude-work' } }, orchestration: { stages: { implement: 'claude' } } };
+const REFUSED_RENAME = {
+  status: 1,
+  signal: null,
+  stdout: `${JSON.stringify({ ok: false, error: { code: 'terminal_not_found', message: 'No terminal term-1.' } })}\n`,
+  stderr: '',
+  error: null,
+};
+
+test('tab title: the builder passes the title as one argument, and a failed rename never runs again by itself', () => {
+  assert.deepEqual(orcaCalls.terminalRename({ terminal: 'term-1', title: 'ux-qol-2: Phase 1 implement' }), {
+    tool: 'orca',
+    args: ['terminal', 'rename', '--terminal', 'term-1', '--title', 'ux-qol-2: Phase 1 implement', '--json'],
+    timeoutMs: 30000,
+    change: true,
+  });
+  const t = execContext([DOWN, ENTER_OK]);
+  const answer = call(t.ctx, orcaCalls.terminalRename({ terminal: 'term-1', title: 'a: b' }));
+  assert.deepEqual([answer.kind, t.calls.length, t.sleeps], ['failed', 1, []], 'a rename never retries by itself');
+});
+
+test('tab title: the agent-path start runs terminal rename with the exact args after worker-start', () => {
+  const root = submitProject(CLAUDE_STAGE);
+  try {
+    const fake = submitFake({ 'worker-start': RECEIPT_1 }, []);
+    const { json, all } = submitStart(root, fake.runner);
+    const spec = path.join(root, '.beast-mode', 'briefs', 'demo', 'orca-phase-1.md');
+    assert.deepEqual(all, [
+      ['orchestration', 'worker-start', '--spec-file', spec, '--task-title', 'demo: Phase 1 implement', '--worktree', 'current', '--agent', 'claude', '--timeout-ms', '120000', '--json'],
+      RENAME_1,
+    ]);
+    assert.deepEqual([json.ok, json.tabTitled], [true, true]);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('tab title: the command-path start runs terminal rename after the Enter loop, in the terminal of the command', () => {
+  const root = commandProject();
+  try {
+    const answers = { 'terminal create': TERMINAL_7, 'terminal wait': IDLE_7, 'worker-start': STARTED_7, 'terminal send': ENTER_OK };
+    const fake = submitFake(answers, [preTurn({ dispatchId: 'disp-7' }), turnStarted('disp-7')]);
+    const { json, all } = submitStart(root, fake.runner);
+    assert.deepEqual(all.slice(-3).map((args) => args.slice(0, 2)), [['terminal', 'send'], ['orchestration', 'worker-show'], ['terminal', 'rename']]);
+    assert.deepEqual(all.at(-1), ['terminal', 'rename', '--terminal', 'term-7', '--title', 'demo: Phase 1 implement', '--json']);
+    assert.deepEqual([json.ok, json.submit, json.tabTitled], [true, 'confirmed', true]);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('tab title: a retry on the agent path and on the command path renames its new tab with the title of the stage', () => {
+  // Agent path: the retry opens a new tab with the worker- title again.
+  let root = submitProject(CLAUDE_STAGE);
+  try {
+    const fake = submitFake({ 'worker-start': failedStartAnswer('disp-9') }, []);
+    assert.equal(submitStart(root, fake.runner).json.ok, false);
+    assert.ok(!fake.orca().some((args) => args[1] === 'rename'), 'a failed start renames nothing');
+    fake.answers['worker-start'] = envelope({ runId: 'run-9', taskId: 'task-9', dispatchId: 'disp-10', state: 'ready', terminal: 'term-3' });
+    const before = fake.orca().length;
+    const retried = orcaStep(root, [...PHASE_1_START, '--retry'], { runner: fake.runner }).json;
+    assert.deepEqual([retried.ok, retried.retry, retried.tabTitled], [true, true, true]);
+    assert.deepEqual(fake.orca().slice(before).at(-1), ['terminal', 'rename', '--terminal', 'term-3', '--title', 'demo: Phase 1 implement', '--json']);
+  } finally {
+    removeFixture(root);
+  }
+
+  // Command path: pinned in full by the command test of the failed start; here the title and the terminal.
+  root = commandProject();
+  try {
+    const fake = commandFake({ 'terminal create': TERMINAL_7, 'terminal wait': IDLE_7, 'worker-start': failedStartAnswer('disp-9') });
+    orcaStep(root, PHASE_1_START, { runner: fake.runner });
+    fake.answers['terminal create'] = envelope({ terminal: { handle: 'term-8', title: null } });
+    fake.answers['worker-start'] = envelope({ runId: 'run-9', taskId: 'task-9', dispatchId: 'disp-10', state: 'ready' });
+    fake.answers['worker-show'] = turnStarted('disp-10');
+    const retried = orcaStep(root, [...PHASE_1_START, '--retry'], { runner: fake.runner }).json;
+    assert.deepEqual([retried.ok, retried.tabTitled], [true, true]);
+    assert.deepEqual(fake.orca().at(-1), ['terminal', 'rename', '--terminal', 'term-8', '--title', 'demo: Phase 1 implement', '--json']);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('tab title: a failed rename keeps the start good with tabTitled false, adds no say line, and runs once', () => {
+  const good = submitProject(CLAUDE_STAGE);
+  const bad = submitProject(CLAUDE_STAGE);
+  try {
+    const first = submitStart(good, submitFake({ 'worker-start': RECEIPT_1 }, []).runner).json;
+    const fake = submitFake({ 'worker-start': RECEIPT_1, 'terminal rename': REFUSED_RENAME }, []);
+    const { code, json, all } = submitStart(bad, fake.runner);
+    assert.deepEqual([code, json.ok, json.tabTitled, json.dispatchId], [0, true, false, 'disp-1']);
+    assert.equal(json.say, first.say, 'a failed rename adds no say line');
+    assert.equal(json.detail, undefined);
+    assert.equal(all.filter((args) => args[1] === 'rename').length, 1, 'the rename never runs again');
+    assert.equal(readRecord(bad, 'demo').record.active.dispatchId, 'disp-1', 'the record keeps the tab');
+  } finally {
+    removeFixture(good);
+    removeFixture(bad);
+  }
+});
+
+test('tab title: a start with no terminal handle runs no rename and adds no tabTitled', () => {
+  const bare = envelope({ runId: 'run-1', taskId: 'task-1', dispatchId: 'disp-1', state: 'ready' });
+  // A claude stage on the agent path: the receipt names no terminal, and no view is read.
+  let root = submitProject(CLAUDE_STAGE);
+  try {
+    const { json, all } = submitStart(root, submitFake({ 'worker-start': bare }, []).runner);
+    assert.deepEqual([json.ok, 'tabTitled' in json], [true, false]);
+    assert.ok(!all.some((args) => args[1] === 'rename'));
+  } finally {
+    removeFixture(root);
+  }
+  // A dsh stage whose view names no terminal either: the loop presses no Enter and the step renames nothing.
+  root = submitProject();
+  try {
+    const { json, all } = submitStart(root, submitFake({ 'worker-start': bare, 'terminal send': ENTER_OK }, [preTurn()]).runner);
+    assert.deepEqual([json.ok, json.submit, 'tabTitled' in json], [true, 'unconfirmed', false]);
+    assert.ok(!all.some((args) => args[1] === 'rename'));
+  } finally {
+    removeFixture(root);
+  }
+  // A command-path start of claude: the terminal of the command exists, so the rename runs.
+  root = submitProject(CLAUDE_COMMAND);
+  try {
+    const { json, all } = submitStart(root, submitFake({ 'terminal create': TERMINAL_7, 'terminal wait': IDLE_7, 'worker-start': STARTED_7 }, []).runner);
+    assert.deepEqual([json.ok, json.tabTitled], [true, true]);
+    assert.deepEqual(all.at(-1), ['terminal', 'rename', '--terminal', 'term-7', '--title', 'demo: Phase 1 implement', '--json']);
   } finally {
     removeFixture(root);
   }
@@ -4628,6 +4969,36 @@ test('dsh wait: an active subagent session gives wait with no send and no escala
   }
 });
 
+test('dsh wait: an escalation whose turn ended on an error gets the resume send, even with an active subagent session', () => {
+  const setup = dshWaitSetup();
+  const root = makeProject({ config: DSH_WRAPPER_CONFIG });
+  try {
+    gitIn(root, ['switch', '-q', '-c', 'feat/demo']);
+    writeRecord(root, 'demo', recordWith({ startedAt: ago(20 * MINUTE).toISOString() }).record);
+    dshSession(setup.dshHome, root, 'lead', { opened: ago(19 * MINUTE), wrote: ago(2000) });
+    dshSession(setup.dshHome, root, 'child', { opened: ago(18 * MINUTE), wrote: ago(30 * 1000) });
+    const fake = fakeRunner({ status: RUNNING, 'worker-show': idleShow(root), send: envelope({ message: { id: 'msg_1' } }) });
+    const env = dshEnv(setup);
+    // The subagent result does not restart a turn that failed (a 429, say), and Orca reports no later idle turn.
+    const json = assertAction(
+      orcaStep(root, ['next', '--feature', 'demo', '--wake', 'escalation', '--dispatch', 'disp-1', '--stop-reason', 'errored'], { runner: fake.runner, env }).json,
+      'send'
+    );
+    assert.notEqual(json.say, DSH_WAIT_SAY);
+    // Any other stop reason keeps the dsh wait.
+    assert.equal(
+      assertAction(orcaStep(root, ['next', '--feature', 'demo', '--wake', 'escalation', '--dispatch', 'disp-1', '--stop-reason', 'finished'], { runner: fake.runner, env }).json, 'wait').say,
+      DSH_WAIT_SAY
+    );
+    // An errored stop reason on a wake for another tab does not count for this tab: no send.
+    assertAction(orcaStep(root, ['next', '--feature', 'demo', '--wake', 'escalation', '--dispatch', 'other', '--stop-reason', 'errored'], { runner: fake.runner, env }).json, 'wait');
+    assert.equal(fake.orca().filter((args) => args[1] === 'send').length, 0, 'next only names the send; the coordinator runs it');
+  } finally {
+    removeFixture(root);
+    fs.rmSync(setup.base, { recursive: true, force: true });
+  }
+});
+
 test('dsh wait: with no active subagent session, the dsh tab gets the resume send as before, then the cap ask', () => {
   const setup = dshWaitSetup();
   const root = makeProject({ config: DSH_WRAPPER_CONFIG });
@@ -4843,6 +5214,32 @@ test('static: terminal close appears only in the terminalClose builder, and only
   assert.deepEqual(enclosing(/orcaCalls\.terminalClose\(/g), ['closeOwnTerminal', 'removeLaneWorktree']);
   // The helper: the feature close and the epic close, never a start, a retry, or a commit.
   assert.deepEqual(enclosing(/(?<!function )\bcloseOwnTerminal\(run/g), ['stepClose', 'stepCloseEpic']);
+});
+
+// Fix 6: `terminal rename` exists in the `terminalRename` builder only, and only the start paths call the builder.
+test('static: terminal rename appears only in the terminalRename builder, and only renameTab calls it', () => {
+  const dir = path.join(PLUGIN_ROOT, 'installer', 'lib', 'orca');
+  for (const name of fs.readdirSync(dir).filter((file) => file.endsWith('.js'))) {
+    const body = fs.readFileSync(path.join(dir, name), 'utf8');
+    const spelled = (body.match(/['"`]terminal['"`]\s*,\s*['"`]rename['"`]/g) ?? []).length;
+    assert.equal(spelled, name === 'exec.js' ? 1 : 0, `${name} holds ${spelled} terminal rename calls`);
+    if (name === 'exec.js') {
+      assert.match(body, /terminalRename: \(\{ terminal, title \}\) => orcaChange\(\['terminal', 'rename', '--terminal', terminal, '--title', title, '--json'\]\)/);
+    } else {
+      assert.doesNotMatch(body, /(?<!orcaCalls\.)\bterminalRename\b/, `${name} names the builder outside a call`);
+    }
+  }
+  const steps = fs.readFileSync(path.join(dir, 'steps.js'), 'utf8');
+  const enclosing = (needle) =>
+    [...steps.matchAll(needle)].map((match) => {
+      const before = steps.slice(0, match.index);
+      return [...before.matchAll(/^function (\w+)\(/gm)].pop()[1];
+    });
+  assert.deepEqual(enclosing(/orcaCalls\.terminalRename\(/g), ['renameTab']);
+  assert.deepEqual(
+    enclosing(/(?<!function )\brenameTab\(run/g),
+    ['startStage', 'startNewLaneByCommand', 'startNewLane', 'stepStartEpic']
+  );
 });
 
 test('static: read.js holds the one temporary-file writer, and steps.js writes a spec only through writeSpec (CR-10)', () => {
@@ -5431,5 +5828,849 @@ test('verify: a failed fix start keeps its round for the retry', () => {
     assert.equal(ask.options[0].run.join(' '), 'start --feature demo --stage fix --phase 1 --round 1 --retry');
   } finally {
     removeFixture(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 4: a plan that starts at Phase 0. A `## Phase 0` heading gives a real
+// phase, so every step takes `--phase 0`, and no check reads 0 as no phase.
+// ---------------------------------------------------------------------------
+
+const PHASE_STEP_LINE = { after: 'phase', command: '/check-phase {feature} {phase}', agent: 'claude' };
+
+/**
+ * A tasks.md text whose first phase is Phase 0: a base phase with no demo
+ * line, then Phase 1 with a demo line.
+ *
+ * @param {number} [done] The phases whose tasks read [x]: 0 for none, 1 for Phase 0, 2 for both.
+ * @returns {string}
+ */
+function phaseZeroTasks(done = 0) {
+  return tasksDoc(
+    phaseText(0, { name: 'Shared base (Base)', ...(done >= 1 ? { done: 2 } : { open: 2 }) }),
+    phaseText(1, { demo: 'b.txt holds one line', ...(done >= 2 ? { done: 1 } : { open: 1 }) })
+  );
+}
+
+test('phase 0: parseTasks reads a ## Phase 0 heading as the phase number 0', () => {
+  const { phases } = parseTasks(phaseZeroTasks(1));
+  assert.deepEqual(
+    phases.map((phase) => [phase.number, phase.name, phase.done, phase.total, phase.demo]),
+    [
+      [0, 'Shared base (Base)', 2, 2, null],
+      [1, 'Slice 1', 0, 1, 'b.txt holds one line'],
+    ]
+  );
+  assert.equal(isPhaseComplete(phases[0]), true);
+  assert.equal(isPhaseNumber(0), true);
+  assert.equal(isPhaseNumber(7), true);
+  for (const bad of [-1, 1.5, null, undefined, '0', Number.NaN]) assert.equal(isPhaseNumber(bad), false, String(bad));
+});
+
+test('phase 0: the --phase flag takes 0 in every step that reads it, and still refuses -1, 1.5, and text', () => {
+  const root = makeProject({ config: { version: 1, orchestration: { stages: { implement: 'dsh', review: false }, steps: [PHASE_STEP_LINE] } } });
+  try {
+    const fake = fakeRunner({ status: RUNNING });
+    // The task list holds Phase 1 only, so each step that took "--phase 0" reaches its guard, which names Phase 0.
+    for (const args of [
+      ['start', '--feature', 'demo', '--phase', '0'],
+      ['start', '--feature', 'demo', '--stage', 'phase', '--phase', '0'],
+      ['start', '--feature', 'demo', '--stage', 'verify', '--phase', '0'],
+      ['start', '--feature', 'demo', '--stage', 'fix', '--phase', '0', '--round', '1'],
+      ['start', '--feature', 'demo', '--stage', 'step', '--step', '0', '--phase', '0'],
+      ['commit', '--feature', 'demo', '--phase', '0'],
+      ['commit', '--feature', 'demo', '--point', 'phase', '--phase', '0'],
+    ]) {
+      const { code, json } = orcaStep(root, args, { runner: fake.runner });
+      assert.deepEqual([code, json.ok, json.code], [0, false, 'phase-missing'], `${args.join(' ')}: ${JSON.stringify(json)}`);
+      assert.match(json.say, /holds no Phase 0\.$/, args.join(' '));
+    }
+    // The epic forms share the parser: "--phase 0" gives a refusal object, never a usage error.
+    for (const args of [
+      ['start', '--epic', 'editor', '--feature', 'editor/base', '--phase', '0'],
+      ['commit', '--epic', 'editor', '--feature', 'editor/base', '--point', 'phase', '--phase', '0'],
+    ]) {
+      const { code, json } = orcaStep(root, args, { runner: fake.runner });
+      assert.deepEqual([code, json.ok], [0, false], `${args.join(' ')}: ${JSON.stringify(json)}`);
+    }
+    // Six digits still pass, so the upper bound stays.
+    assert.equal(orcaStep(root, ['start', '--feature', 'demo', '--phase', '999999'], { runner: fake.runner }).json.code, 'phase-missing');
+
+    for (const bad of ['-1', '1.5', 'x', '', '00', '01', '1000000']) {
+      assert.throws(
+        () => orcaStep(root, ['start', '--feature', 'demo', `--phase=${bad}`], { runner: fake.runner }),
+        (err) =>
+          err instanceof UsageError &&
+          err.message === `"--phase ${bad}" names no phase.` &&
+          err.causeText === 'The "--phase" flag takes a whole number from 0 up.',
+        `--phase=${bad}`
+      );
+    }
+    assert.throws(() => orcaStep(root, ['commit', '--feature', 'demo', '--phase', '-1'], { runner: fake.runner }), UsageError);
+    assert.deepEqual(fake.orca(), [], 'no refusal and no usage error reaches Orca');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('phase 0: a plan that starts at Phase 0 walks start, close, and commit for Phase 0 with --phase 0, then moves to Phase 1', () => {
+  const root = makeProject({ tasks: phaseZeroTasks(), config: SAME_VERIFY_JSON });
+  try {
+    const fake = verifyFake();
+    const docs = path.join(root, 'docs', 'features', 'demo');
+    /** @type {unknown[]} */
+    const activePhases = [];
+    const work = (stage, phase) => {
+      if (stage === 'phase') {
+        // The record keeps the phase of the running tab, and Phase 0 is a phase, not a missing value.
+        activePhases.push(readRecord(root, 'demo').record?.active?.phase);
+        fs.writeFileSync(path.join(docs, 'tasks.md'), phaseZeroTasks(phase + 1));
+        fs.writeFileSync(path.join(root, `phase-${phase}.txt`), `phase ${phase}\n`);
+        // Verify equal to implement: the phase tab writes the verdict.
+        fs.writeFileSync(path.join(briefsOf(root), `orca-phase-${phase}.verdict.md`), `PASS\nthe gate is green\nDemo: ${phase === 0 ? 'none' : 'PASS'}\n`);
+      } else if (stage === 'docs') {
+        fs.appendFileSync(path.join(docs, 'context.md'), '\n## Session Notes\n\n- done.\n');
+      }
+    };
+    const { trail, actions, done } = walk(root, fake, work);
+    assert.deepEqual(trail, [
+      'branch',
+      'start phase 0',
+      'close phase',
+      'commit phase 0',
+      'start phase 1',
+      'close phase',
+      'commit phase 1',
+      'start docs',
+      'close docs',
+    ]);
+    assert.deepEqual(activePhases, [0, 1]);
+
+    const start = actions.find((action) => action.action === 'start' && action.stage === 'phase' && action.phase === 0);
+    assert.equal(start?.run, lineOf(root, ['start', '--feature', 'demo', '--stage', 'phase', '--phase', '0']));
+    assert.equal(start?.say, 'Start the Phase 0 tab of demo on dsh.');
+    assert.ok(
+      fs.readFileSync(path.join(briefsOf(root), 'orca-phase-0.md'), 'utf8').startsWith('# Beast Mode orca worker - demo, Phase 0: Shared base (Base)\n')
+    );
+    const closes = actions.filter((action) => action.action === 'close' && action.stage === 'phase');
+    assert.deepEqual(
+      closes.map((action) => [action.phase, action.say]),
+      [
+        [0, 'Phase 0 of demo is done. Close its tab.'],
+        [1, 'Phase 1 of demo is done. Close its tab.'],
+      ]
+    );
+    assert.equal(closes[0].show, null, 'a base phase with no demo line shows no slice block');
+    assert.match(closes[1].show, /^Slice ready: Phase 1 - Slice 1\nDemo: b\.txt holds one line\nVerifier: Demo PASS\n/);
+
+    const commit = actions.find((action) => action.action === 'commit' && action.phase === 0);
+    assert.deepEqual([commit?.subject, commit?.say], ['feat: demo phase 0', 'Commit Phase 0 of demo.']);
+    assert.equal(commit?.run, lineOf(root, ['commit', '--feature', 'demo', '--point', 'phase', '--phase', '0']));
+    assert.deepEqual(gitIn(root, ['log', '--format=%s']).trim().split('\n'), ['feat: demo phase 1', 'feat: demo phase 0', 'init']);
+    assert.deepEqual(gitIn(root, ['show', '--name-only', '--format=', 'HEAD~1']).split('\n').filter(Boolean).sort(), [
+      'docs/features/demo/tasks.md',
+      'phase-0.txt',
+    ]);
+
+    assertAction(done, 'done');
+    assert.match(done.show, /^- Phase 0 - Shared base \(Base\): committed as "feat: demo phase 0", verified PASS$/m);
+    assert.match(done.show, /^- Phase 1 - Slice 1: committed as "feat: demo phase 1", verified PASS$/m);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('phase 0: a split verify, a fix round, and a phase step run for Phase 0 under verify["0"] and the mark phase-0:0', () => {
+  const root = makeProject({
+    tasks: phaseZeroTasks(),
+    config: { version: 1, orchestration: { stages: { implement: 'dsh', verify: 'claude', review: false }, steps: [PHASE_STEP_LINE] } },
+  });
+  try {
+    const fake = verifyFake();
+    const docs = path.join(root, 'docs', 'features', 'demo');
+    /** @type {Record<number, string[]>} */
+    const verdicts = { 0: ['FAIL\n- base.txt holds no second line\nDemo: none', 'PASS\nthe gate is green\nDemo: none'], 1: ['PASS\nDemo: PASS'] };
+    const work = (stage, phase) => {
+      if (stage === 'phase') {
+        fs.writeFileSync(path.join(docs, 'tasks.md'), phaseZeroTasks(phase + 1));
+        fs.writeFileSync(path.join(root, `phase-${phase}.txt`), `phase ${phase}\n`);
+      } else if (stage === 'verify') {
+        fs.writeFileSync(path.join(briefsOf(root), `orca-phase-${phase}.verdict.md`), String(verdicts[phase].shift()));
+      } else if (stage === 'fix') {
+        fs.appendFileSync(path.join(root, `phase-${phase}.txt`), 'fixed\n');
+      } else if (stage === 'step') {
+        fs.writeFileSync(path.join(briefsOf(root), `orca-step-phase-${phase}-0.verdict.md`), 'PASS\nthe check is green\n');
+      } else if (stage === 'docs') {
+        fs.appendFileSync(path.join(docs, 'context.md'), '\n## Session Notes\n\n- done.\n');
+      }
+    };
+    const { trail, actions, done } = walk(root, fake, work);
+    assert.deepEqual(trail, [
+      'branch',
+      'start phase 0',
+      'close phase',
+      'start verify 0',
+      'close verify',
+      'start fix 0',
+      'close fix',
+      'start verify 0',
+      'close verify',
+      'start step 0',
+      'close step',
+      'commit phase 0',
+      'start phase 1',
+      'close phase',
+      'start verify 1',
+      'close verify',
+      'start step 1',
+      'close step',
+      'commit phase 1',
+      'start docs',
+      'close docs',
+    ]);
+
+    const fix = actions.find((action) => action.action === 'start' && action.stage === 'fix');
+    assert.deepEqual([fix?.phase, fix?.round, fix?.verdictFile], [0, 1, 'orca-phase-0.verdict.md']);
+    assert.equal(fix?.run, lineOf(root, ['start', '--feature', 'demo', '--stage', 'fix', '--phase', '0', '--round', '1']));
+    assert.match(fs.readFileSync(path.join(briefsOf(root), 'orca-fix-0-r1.md'), 'utf8'), /> - base\.txt holds no second line/);
+    assert.match(fs.readFileSync(path.join(briefsOf(root), 'orca-phase-0-r1.verdict.md'), 'utf8'), /^FAIL/);
+    assert.ok(fs.existsSync(path.join(briefsOf(root), 'orca-verify-0.md')));
+
+    const stepStart = actions.find((action) => action.action === 'start' && action.stage === 'step' && action.phase === 0);
+    assert.deepEqual(
+      [stepStart?.point, stepStart?.step, stepStart?.stepCommand, stepStart?.verdictFile],
+      ['phase-0', 0, '/check-phase demo 0', 'orca-step-phase-0-0.verdict.md']
+    );
+    assert.equal(stepStart?.say, 'Start the step tab of demo after Phase 0 on claude: /check-phase demo 0.');
+    assert.equal(stepStart?.run, lineOf(root, ['start', '--feature', 'demo', '--stage', 'step', '--step', '0', '--phase', '0']));
+    assert.ok(fs.existsSync(path.join(briefsOf(root), 'orca-step-phase-0-0.md')));
+    // The phase step runs before the phase commit, and the commit follows its mark.
+    assert.ok(trail.indexOf('close step') < trail.indexOf('commit phase 0'));
+
+    const record = readRecord(root, 'demo').record;
+    assert.deepEqual(record?.verify, { 0: { round: 1 } }, 'the record keeps the fix round of Phase 0');
+    assert.deepEqual(record?.done?.steps, { 'phase-0:0': 'PASS', 'phase-1:0': 'PASS' }, 'the mark of Phase 0 stays when Phase 1 starts');
+
+    assertAction(done, 'done');
+    assert.match(done.show, /^- Phase 0 - Shared base \(Base\): committed as "feat: demo phase 0", verified PASS after 1 fix round$/m);
+    assert.match(done.show, /^- \/check-phase \{feature\} \{phase\} \(Phase 0\): PASS$/m);
+    assert.deepEqual(gitIn(root, ['log', '--format=%s']).trim().split('\n'), ['feat: demo phase 1', 'feat: demo phase 0', 'init']);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('phase 0: the tab names, the retry line, the send text, the spec path, and the close say keep Phase 0', () => {
+  // decide: a busy Phase 0 tab waits under its own name.
+  const wait = assertAction(decideFeature(facts({ record: recordWith({ phase: 0 }), worker: { state: 'busy', detail: [] } })), 'wait');
+  assert.equal(wait.say, 'The Phase 0 tab of demo works on dsh. Orca wakes this tab when it reports.');
+  assert.equal(wait.workers[0].phase, 0);
+  const verifyWait = assertAction(
+    decideFeature(facts({ record: recordWith({ stage: 'verify', phase: 0, agent: 'claude' }), worker: { state: 'busy', detail: [] } })),
+    'wait'
+  );
+  assert.equal(verifyWait.say, 'The verify tab of Phase 0 of demo works on claude. Orca wakes this tab when it reports.');
+
+  // decide: a failed start of Phase 0 retries with "--phase 0", and its question and label name Phase 0.
+  const failedOf = (failedStart) =>
+    recordWith({}, {
+      active: null,
+      failedStart: { agent: 'dsh', code: 'start_failed', failedStage: 'terminal', taskId: 'task-9', dispatchId: 'disp-9', count: 1, detail: [], ...failedStart },
+    });
+  const ask = assertAction(decideFeature(facts({ record: failedOf({ stage: 'phase', phase: 0 }) })), 'ask');
+  assert.match(ask.question, /^\[demo phase 0\] The start of the tab failed/);
+  assert.deepEqual(ask.options[0].run, ['start', '--feature', 'demo', '--stage', 'phase', '--phase', '0', '--retry']);
+  assert.equal(ask.options[0].label, 'Retry the start of Phase 0. Orca reuses the same Task.');
+  const fixAsk = assertAction(decideFeature(facts({ record: failedOf({ stage: 'fix', phase: 0, round: 1 }) })), 'ask');
+  assert.match(fixAsk.question, /^\[demo phase 0 fix\] /);
+  assert.deepEqual(fixAsk.options[0].run, ['start', '--feature', 'demo', '--stage', 'fix', '--phase', '0', '--round', '1', '--retry']);
+  assert.equal(fixAsk.options[0].label, 'Retry the start of the fix of Phase 0. Orca reuses the same Task.');
+
+  // steps: the record reader keeps Phase 0, so send, close, and the retry guard name it.
+  const root = makeProject({ tasks: phaseZeroTasks() });
+  try {
+    gitIn(root, ['switch', '-q', '-c', 'feat/demo']);
+    writeRecord(root, 'demo', recordWith({ phase: 0 }).record);
+    assert.equal(readRecord(root, 'demo').record?.active?.phase, 0);
+    const fake = fakeRunner({ send: envelope({ message: { id: 'msg_1', subject: 'x' } }), 'worker-release': envelope({ state: 'already_released' }) });
+    const step = (args) => orcaStep(root, args, { runner: fake.runner }).json;
+    const sent = () => fake.orca().at(-1);
+
+    let json = step(['send', '--feature', 'demo', '--reason', 'open-tasks']);
+    assert.deepEqual([json.ok, json.open], [true, ['**Task 0.1** open', '**Task 0.2** open']]);
+    assert.equal(sent()[5], 'Open items: Phase 0 of demo');
+    json = step(['send', '--feature', 'demo', '--reason', 'escalation']);
+    assert.equal(sent()[5], 'Resume: Phase 0 of demo');
+    assert.ok(sent()[7].includes('by your spec, `.beast-mode/briefs/demo/orca-phase-0.md`.'), sent()[7]);
+    json = step(['send', '--feature', 'demo', '--reason', 'report']);
+    assert.deepEqual([json.code, json.say], ['report-not-ready', 'The done proof of the Phase 0 tab of demo does not hold yet.']);
+    json = step(['close', '--feature', 'demo']);
+    assert.equal(json.ok, true, JSON.stringify(json));
+    assert.match(json.say, /^Closed the Phase 0 tab of demo\./);
+
+    // A failed start of Phase 0 keeps its phase: a retry of Phase 1 is refused, and the refusal names Phase 0.
+    writeRecord(root, 'demo', {
+      ...newRecord('demo'),
+      failedStart: { stage: 'phase', phase: 0, agent: 'dsh', taskId: 'task-9', dispatchId: 'disp-9', count: 1 },
+    });
+    assert.equal(readRecord(root, 'demo').record?.failedStart?.phase, 0);
+    json = step(['start', '--feature', 'demo', '--stage', 'phase', '--phase', '1', '--retry']);
+    assert.equal(json.code, 'retry-mismatch', JSON.stringify(json));
+    assert.deepEqual(json.detail, ['The run record holds a failed start of Phase 0.']);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 5: the tab title. A first start passes `--task-title`, and Orca shows
+// the Task title as the tab title. A retry keeps the title of its Task. No
+// start pins a custom tab title.
+// ---------------------------------------------------------------------------
+
+/** @param {string[]} args @returns {string | undefined} */
+function taskTitleArg(args) {
+  const at = args.indexOf('--task-title');
+  return at === -1 ? undefined : args[at + 1];
+}
+
+test('tab title: taskTitleOf leads with the feature leaf and names the work of each stage', () => {
+  const title = (facts) => taskTitleOf({ feature: 'nebula-light', ...facts });
+  assert.equal(title({ stage: 'phase', phase: 2 }), 'nebula-light: Phase 2 implement');
+  assert.equal(title({ stage: 'verify', phase: 2 }), 'nebula-light: Phase 2 verify');
+  assert.equal(title({ stage: 'fix', phase: 2, round: 1 }), 'nebula-light: Phase 2 fix 1');
+  assert.equal(title({ stage: 'plan' }), 'nebula-light: plan');
+  assert.equal(title({ stage: 'review' }), 'nebula-light: review');
+  assert.equal(title({ stage: 'review-fix' }), 'nebula-light: review fixes');
+  assert.equal(title({ stage: 'docs' }), 'nebula-light: docs');
+  assert.equal(title({ stage: 'inbox' }), 'nebula-light: inbox');
+  assert.equal(title({ stage: 'step', command: '/update-astrophysics' }), 'nebula-light: step /update-astrophysics');
+  assert.equal(title({ stage: 'phase', phase: 0 }), 'nebula-light: Phase 0 implement', 'Phase 0 is a real phase');
+  assert.equal(taskTitleOf({ feature: 'map-view', stage: 'epic-docs' }), 'map-view: epic docs');
+  assert.equal(taskTitleOf({ feature: 'editor/base', stage: 'docs' }), 'base: docs', 'a lane feature gives its leaf');
+});
+
+test('tab title: a long step command ends in an ellipsis and the title stays within 60 characters', () => {
+  const command = `/run-the-whole-check ${'very-long-argument '.repeat(10)}`;
+  const long = taskTitleOf({ feature: 'nebula-light', stage: 'step', command });
+  assert.ok(long.length <= 60, `${long.length}: ${long}`);
+  assert.ok(long.startsWith('nebula-light: step /run-the-whole-check'));
+  assert.ok(long.endsWith('…'));
+  const short = taskTitleOf({ feature: 'nebula-light', stage: 'step', command: '/ok' });
+  assert.equal(short, 'nebula-light: step /ok');
+  assert.ok(taskTitleOf({ feature: 'f'.repeat(100), stage: 'phase', phase: 3 }).length <= 60, 'a long feature name stays within the cap');
+});
+
+test('tab title: the agent-path start passes --task-title, a Phase 0 start too, and a retry passes none', () => {
+  const root = makeProject({ tasks: phaseZeroTasks(), config: SAME_VERIFY_JSON });
+  try {
+    assert.equal(orcaStep(root, ['branch', '--feature', 'demo'], { runner: fakeRunner({}).runner }).json.ok, true);
+    const fake = fakeRunner({
+      'worker-start': envelope({ runId: 'run-1', taskId: 'task-1', dispatchId: 'disp-1', state: 'ready' }),
+      'worker-show': turnStarted('disp-1'),
+    });
+    const starts = () => fake.orca().filter((args) => args[1] === 'worker-start');
+    const first = orcaStep(root, ['start', '--feature', 'demo', '--stage', 'phase', '--phase', '0'], { runner: fake.runner }).json;
+    assert.equal(first.ok, true, JSON.stringify(first));
+    assert.equal(taskTitleArg(starts()[0]), 'demo: Phase 0 implement');
+    for (const args of fake.orca()) assert.ok(!args.includes('--title'), `no pinned tab title: ${args.join(' ')}`);
+  } finally {
+    removeFixture(root);
+  }
+
+  const retryRoot = makeProject();
+  try {
+    gitIn(retryRoot, ['switch', '-q', '-c', 'feat/demo']);
+    const fake = fakeRunner({ 'worker-start': failedStartAnswer('disp-9'), 'worker-release': envelope({ state: 'released' }) });
+    const step = (args) => orcaStep(retryRoot, args, { runner: fake.runner }).json;
+    step(['start', '--feature', 'demo', '--stage', 'phase', '--phase', '1']);
+    step(['start', '--feature', 'demo', '--stage', 'phase', '--phase', '1', '--retry']);
+    const starts = fake.orca().filter((args) => args[1] === 'worker-start');
+    assert.equal(starts.length, 2);
+    assert.equal(taskTitleArg(starts[0]), 'demo: Phase 1 implement');
+    assert.equal(taskTitleArg(starts[1]), undefined, 'the retry keeps the title of its Task');
+  } finally {
+    removeFixture(retryRoot);
+  }
+});
+
+test('tab title: the command-path start passes --task-title on worker-start, and its retry passes none', () => {
+  const root = commandProject();
+  try {
+    const fake = commandFake({ 'terminal create': TERMINAL_7, 'terminal wait': IDLE_7, 'worker-start': failedStartAnswer('disp-9') });
+    orcaStep(root, PHASE_1_START, { runner: fake.runner });
+    fake.answers['terminal create'] = envelope({ terminal: { handle: 'term-8', worktreeId: 'repo-1::/tmp/demo', title: null } });
+    fake.answers['worker-start'] = envelope({ runId: 'run-9', taskId: 'task-9', dispatchId: 'disp-10', state: 'ready' });
+    orcaStep(root, [...PHASE_1_START, '--retry'], { runner: fake.runner });
+    const starts = fake.orca().filter((args) => args[1] === 'worker-start');
+    assert.equal(starts.length, 2);
+    assert.equal(taskTitleArg(starts[0]), 'demo: Phase 1 implement');
+    assert.equal(taskTitleArg(starts[1]), undefined, 'the retry keeps the title of its Task');
+    assert.ok(fake.orca().every((args) => !args.includes('--title')), 'no pinned tab title');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('tab title: a step tab carries the step command, trimmed inside the cap', () => {
+  const longCommand = '/check-phase {feature} {phase} --with-a-very-long-list-of-flags --and-more-flags --and-even-more-flags';
+  const root = makeProject({
+    tasks: phaseZeroTasks(1),
+    config: { version: 1, orchestration: { stages: { implement: 'dsh', review: false }, steps: [{ after: 'phase', command: longCommand, agent: 'claude' }] } },
+  });
+  try {
+    assert.equal(orcaStep(root, ['branch', '--feature', 'demo'], { runner: fakeRunner({}).runner }).json.ok, true);
+    const fake = fakeRunner({ 'worker-start': envelope({ runId: 'run-1', taskId: 'task-1', dispatchId: 'disp-1', state: 'ready' }), 'worker-show': turnStarted('disp-1') });
+    const { json } = orcaStep(root, ['start', '--feature', 'demo', '--stage', 'step', '--phase', '0', '--step', '0'], { runner: fake.runner });
+    assert.equal(json.ok, true, JSON.stringify(json));
+    const title = taskTitleArg(fake.orca().find((args) => args[1] === 'worker-start') ?? []);
+    assert.ok(title && title.length <= 60 && title.startsWith('demo: step /check-phase demo 0'), String(title));
+    assert.ok(title.endsWith('…'), title);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 7: the undelivered report of a helper that a dsh tab started through
+// Orca, and the backstop timer of the coordinator
+// ---------------------------------------------------------------------------
+
+/**
+ * One row of an `inbox --full` answer.
+ *
+ * @param {Record<string, any>} patch
+ * @returns {Record<string, any>}
+ */
+function mailRow(patch = {}) {
+  return {
+    id: 'msg_a',
+    to_handle: 'dispatch:disp-1',
+    type: 'worker_done',
+    subject: 'g1 done',
+    read: 1,
+    created_at: ago(30 * MINUTE).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    delivered_at: null,
+    delivery_contract: 'current_delivery',
+    ...patch,
+  };
+}
+
+/** A worker fact of one undelivered message. */
+const STUCK_MAIL = { messages: [{ id: 'msg_a' }], detail: ['Orca: the worker_done message msg_a to dispatch:disp-1 is undelivered, 30 min after it was sent.'] };
+
+test('fix 7: undeliveredMail keeps only old, undelivered mail to the tab, and a fault reads as no mail', () => {
+  const ok = (/** @type {Record<string, any>[]} */ messages) => ({ kind: 'ok', result: { messages, count: messages.length } });
+  const opts = { dispatchId: 'disp-1', now: NOW, minAgeMs: UNDELIVERED_MAIL_MS };
+  assert.equal(UNDELIVERED_MAIL_MS, 10 * MINUTE);
+  const mail = undeliveredMail(
+    ok([
+      mailRow(),
+      mailRow({ id: 'msg_delivered', delivered_at: ago(29 * MINUTE).toISOString() }),
+      mailRow({ id: 'msg_young', created_at: ago(9 * MINUTE).toISOString() }),
+      mailRow({ id: 'msg_other', to_handle: 'dispatch:disp-2' }),
+      mailRow({ id: 'msg_named' }),
+      mailRow({ id: 'msg_sqlite', created_at: ago(60 * MINUTE).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '') }),
+      mailRow({ id: 'msg_bad_time', created_at: 'yesterday' }),
+      'not a row',
+    ]),
+    { ...opts, exclude: ['msg_named'] }
+  );
+  assert.deepEqual(mail.messages.map((message) => message.id), ['msg_sqlite', 'msg_a'], 'oldest first');
+  assert.equal(mail.detail[1], 'Orca: the worker_done message msg_a to dispatch:disp-1 is undelivered, 30 min after it was sent.');
+  for (const answer of [{ kind: 'failed', code: 'x', detail: [] }, { kind: 'ok', result: {} }, { kind: 'ok', result: null }, null]) {
+    assert.deepEqual(undeliveredMail(/** @type {any} */ (answer), opts), { messages: [], detail: [] });
+  }
+  // The read marks nothing: `inbox`, never a consuming `check`.
+  assert.deepEqual(orcaCalls.inbox('disp-1'), {
+    tool: 'orca',
+    args: ['orchestration', 'inbox', '--terminal', 'dispatch:disp-1', '--limit', '50', '--full', '--json'],
+    timeoutMs: 30000,
+    change: false,
+  });
+});
+
+test('fix 7: an idle or busy dsh tab with undelivered mail gets the resume send with --mail, never a wait or the dsh wait', () => {
+  const idle = { state: 'idle', detail: [] };
+  const busy = { state: 'busy', detail: ['Orca: worker ready, liveness live, activity working.'] };
+  const child = { active: true, detail: ['dsh: 1 subagent session of the tab wrote in the last 10 minutes, the newest 30 s ago.'] };
+  const record = recordWith({ agent: 'dsh' });
+  // Without the mail fact these wait: a worker_done wake for another tab, no wake, an escalation with an active subagent, a busy tab.
+  const cases = [
+    { flags: { wake: 'worker_done', dispatch: 'other' }, worker: idle },
+    { flags: {}, worker: idle },
+    { flags: { wake: 'escalation', dispatch: 'disp-1' }, worker: { ...idle, child } },
+    { flags: {}, worker: busy },
+    { flags: { wake: 'escalation', dispatch: 'disp-1' }, worker: busy },
+  ];
+  for (const { flags, worker } of cases) {
+    const label = JSON.stringify({ flags, state: worker.state });
+    assertAction(decideFeature(facts({ flags, record, worker })), 'wait');
+    const send = assertAction(decideFeature(facts({ flags, record, worker: { ...worker, mail: STUCK_MAIL } })), 'send');
+    assert.equal(send.reason, 'escalation', label);
+    assert.equal(send.mail, 1, label);
+    assert.deepEqual(send.run.slice(-3), ['--reason', 'escalation', '--mail'], label);
+    assert.match(send.say, /^1 message to the Phase 1 tab of demo is undelivered\./, label);
+  }
+  // The done proof holds: the report send names the mail.
+  const report = assertAction(decideFeature(facts({ docs: phaseOneComplete(), record, worker: { ...idle, mail: STUCK_MAIL } })), 'send');
+  assert.deepEqual([report.reason, report.run.at(-1)], ['report', '--mail']);
+  // Still bound by the escalation cap.
+  const capped = assertAction(decideFeature(facts({ record: recordWith({ agent: 'dsh', escalations: 1 }), worker: { ...idle, mail: STUCK_MAIL } })), 'ask');
+  assert.equal(capped.reason, 'escalation-cap');
+  // No mail, or an empty fact, decides as before.
+  assertAction(decideFeature(facts({ record, worker: { ...idle, mail: { messages: [], detail: [] } } })), 'wait');
+
+  // Only a dsh tab that is idle or busy reads the mail, and never on a stop request.
+  const active = record.record.active;
+  const base = { fresh: false, wake: null, dispatch: null, stop: false };
+  assert.equal(wantsPendingMail(base, active, idle), true);
+  assert.equal(wantsPendingMail(base, active, busy), true);
+  assert.equal(wantsPendingMail({ ...base, stop: true }, active, idle), false);
+  assert.equal(wantsPendingMail(base, active, { state: 'done', detail: [] }), false);
+  assert.equal(wantsPendingMail(base, { ...active, agent: 'claude' }, idle), false);
+});
+
+test('fix 7: next reads the inbox of an idle dsh tab, send --mail names the mail and records it, and the next call waits again', () => {
+  const root = makeProject({ config: { ...DSH_WRAPPER_CONFIG, orchestration: { ...DSH_WRAPPER_CONFIG.orchestration, backstopSeconds: 120 } } });
+  try {
+    gitIn(root, ['switch', '-q', '-c', 'feat/demo']);
+    writeRecord(root, 'demo', recordWith({ startedAt: ago(60 * MINUTE).toISOString() }).record);
+    const inbox = envelope({ messages: [mailRow()], count: 1 });
+    const fake = fakeRunner({ status: RUNNING, 'worker-show': idleShow(root), inbox, send: envelope({ message: { id: 'msg_1' } }) });
+    const next = (/** @type {string[]} */ flags) => orcaStep(root, ['next', '--feature', 'demo', ...flags], { runner: fake.runner }).json;
+
+    // The report of the helper went to the lead, which is idle: no escalation wake comes.
+    const json = assertAction(next(['--wake', 'worker_done', '--dispatch', 'helper-1']), 'send');
+    assert.equal(json.run, lineOf(root, ['send', '--feature', 'demo', '--reason', 'escalation', '--mail']));
+    assert.ok(fake.orca().some((args) => args[1] === 'inbox'));
+    assert.ok(!fake.orca().some((args) => args[1] === 'check'), 'the mail stays for the tab');
+
+    const sent = orcaStep(root, ['send', '--feature', 'demo', '--reason', 'escalation', '--mail'], { runner: fake.runner }).json;
+    assert.deepEqual([sent.ok, sent.mail], [true, ['msg_a']]);
+    const body = fake.orca().at(-1).join('\n');
+    assert.match(body, /You have unread orchestration mail: 1 message that Orca has not delivered to you\./);
+    assert.match(body, /the `check` command of your worker preamble/);
+    assert.match(body, /`dispatch:disp-1`/);
+    assert.deepEqual(readRecord(root, 'demo').record.active.mailNamed, ['msg_a']);
+
+    // The named message makes no second send: the idle tab waits for its wake, with the timer of orca.json.
+    const waited = assertAction(next(['--wake', 'worker_done', '--dispatch', 'helper-1']), 'wait');
+    assert.equal(waited.timer.seconds, 120);
+    assert.equal(waited.timer.statusEveryMinutes, 30);
+    assert.equal(waited.timer.run, lineOf(root, ['next', '--feature', 'demo', '--wake', 'timer']));
+    // A send without --mail names no mail.
+    fake.answers.inbox = envelope({ messages: [mailRow({ id: 'msg_b' })], count: 1 });
+    writeRecord(root, 'demo', recordWith({ startedAt: ago(60 * MINUTE).toISOString() }).record);
+    orcaStep(root, ['send', '--feature', 'demo', '--reason', 'escalation'], { runner: fake.runner });
+    assert.doesNotMatch(fake.orca().at(-1).join('\n'), /orchestration mail/);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('fix 7: every wait names the backstop timer, and --wake timer judges an idle dsh tab as a fresh call does', () => {
+  const idle = { state: 'idle', detail: [] };
+  const busy = { state: 'busy', detail: [] };
+  const dsh = recordWith({ agent: 'dsh' });
+  const claude = recordWith({ agent: 'claude' });
+  assert.equal(DSH_TIMER_SECONDS, 600);
+
+  const wait = assertAction(decideFeature(facts({ record: dsh, worker: busy })), 'wait');
+  assert.deepEqual(wait.timer, { seconds: 600, statusEveryMinutes: 30, run: ['next', '--feature', 'demo', '--wake', 'timer'] });
+  // The timer carries the configured seconds and status cadence of orca.json.
+  const tuned = parseOrcaConfig(JSON.stringify({ ...DEFAULT_CONFIG, orchestration: { ...DEFAULT_CONFIG.orchestration, backstopSeconds: 900, statusEveryMinutes: 45 } }));
+  const tunedWait = assertAction(decideFeature(facts({ config: tuned, record: dsh, worker: busy })), 'wait');
+  assert.deepEqual([tunedWait.timer.seconds, tunedWait.timer.statusEveryMinutes], [900, 45]);
+  // Every wait names the timer, a claude tab too: Orca can fail to deliver wakes to the coordinator itself,
+  // and it sends no wake for a claude turn that ended with no Stop hook (fix 8).
+  assert.deepEqual(assertAction(decideFeature(facts({ record: claude, worker: busy })), 'wait').timer, wait.timer, 'a claude tab names the timer');
+  const child = { active: true, detail: [] };
+  const dshWait = assertAction(decideFeature(facts({ flags: { wake: 'escalation' }, record: dsh, worker: { ...idle, child } })), 'wait');
+  assert.equal(dshWait.say, DSH_WAIT_SAY);
+  assert.equal(dshWait.timer.seconds, 600);
+  assert.match(renderAction(dshWait, { node: '/n', bin: '/b.js', project: '/p' }).timer.run, / orca next --feature demo --wake timer --project /);
+
+  const timer = { wake: 'timer' };
+  // An idle dsh tab with no report: the timer wake sends the resume text, as a fresh call does.
+  assert.equal(assertAction(decideFeature(facts({ record: dsh, worker: idle })), 'wait').action, 'wait');
+  assert.equal(assertAction(decideFeature(facts({ flags: timer, record: dsh, worker: idle })), 'send').reason, 'escalation');
+  // It reads the subagent fact, so a dsh tab whose subagent still writes keeps the dsh wait and its timer.
+  assert.equal(wantsDshChild({ fresh: false, wake: 'timer', dispatch: null, stop: false }, dsh.record.active, idle), true);
+  assert.equal(assertAction(decideFeature(facts({ flags: timer, record: dsh, worker: { ...idle, child } })), 'wait').say, DSH_WAIT_SAY);
+  // A busy tab waits again, with no stop, and an idle claude tab is judged by the timer as a fresh call does.
+  assertAction(decideFeature(facts({ flags: timer, record: dsh, worker: busy })), 'wait');
+  assertAction(decideFeature(facts({ flags: timer, record: claude, worker: busy })), 'wait');
+  assert.equal(assertAction(decideFeature(facts({ flags: timer, record: claude, worker: idle })), 'send').reason, 'escalation');
+  // With undelivered mail, the timer wake sends with --mail.
+  assert.equal(assertAction(decideFeature(facts({ flags: timer, record: dsh, worker: { ...busy, mail: STUCK_MAIL } })), 'send').run.at(-1), '--mail');
+  // A stop request holds on the timer call too.
+  assert.deepEqual(assertAction(decideFeature(facts({ flags: { stop: true }, record: dsh, worker: busy })), 'wait').timer.run.slice(-3), ['--wake', 'timer', '--stop']);
+});
+
+test('fix 7: both coordinator skills follow the timer of a wait quietly, keep it the one background command, and /orca-setup asks for its settings', () => {
+  for (const [name, target] of [['orca-feature', '--feature <path>'], ['orca-epic', '--epic <epic>']]) {
+    const skill = fs.readFileSync(path.join(PLUGIN_ROOT, 'templates', 'skills', name, 'SKILL.md'), 'utf8');
+    assert.ok(skill.includes('### The backstop timer'), name);
+    assert.ok(skill.includes('When the action holds a `timer`, start it by The backstop timer.'), name);
+    assert.ok(skill.includes(`\`beast-mode orca next ${target} --wake timer\``), name);
+    assert.ok(skill.includes('`sleep <seconds>`'), name);
+    assert.ok(skill.includes('Start no watch script and no background command, apart from the one timer of The backstop timer.'), name);
+    assert.ok(skill.includes('The one exception is the timer of The backstop timer'), name);
+    assert.ok(skill.includes('The timer reads no mail and runs no Orca command.'), name);
+    assert.ok(skill.includes('`orchestration.backstopSeconds`, default 600, and `orchestration.statusEveryMinutes`, default 30'), name);
+    assert.ok(skill.includes('So every `wait` holds a `timer`, for every tab and every agent'), name);
+    assert.ok(skill.includes('Orca can fail to deliver wakes to this tab itself'), name);
+    assert.ok(!skill.includes('a `wait` on a dsh tab holds a `timer`'), name);
+    assert.ok(skill.includes('**A timer wake is a quiet check.** Run the check on every timer, and keep the chat quiet:'), name);
+    assert.ok(skill.includes('post no message to the user'), name);
+    assert.ok(skill.includes('only when no such line went out in the last `statusEveryMinutes` minutes of the timer'), name);
+    assert.ok(skill.includes('Speak only when something goes wrong or a stage finishes.'), name);
+  }
+  const setup = fs.readFileSync(path.join(PLUGIN_ROOT, 'templates', 'skills', 'orca-setup', 'SKILL.md'), 'utf8');
+  for (const part of ['### Call 3: the backstop timer', '"backstopSeconds": 600,', '"statusEveryMinutes": 30,', 'Backstop timer: <n> s    Status line at most every: <n> min']) {
+    assert.ok(setup.includes(part), `orca-setup lacks: ${part}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 8: a turn that ended with no Stop hook (an interrupted claude turn)
+// ---------------------------------------------------------------------------
+
+/** The default `worker-show --json` view of a live tab whose last status said `working`. */
+function workingView(lastActivity, extra = {}) {
+  return { dispatchId: 'disp-1', state: 'ready', stage: 'input_accepted', liveness: 'live', activity: 'working', lastActivity, terminal: 'term-7', ...extra };
+}
+
+test('fix 8: turnQuietMs reads the quiet time of a working turn from both worker-show views, and nothing else', () => {
+  const ok = (/** @type {any} */ result) => ({ kind: 'ok', result, detail: [] });
+  assert.equal(turnQuietMs(ok(workingView('45m ago')), NOW), 45 * MINUTE);
+  assert.equal(turnQuietMs(ok(workingView('30s ago')), NOW), 30 * 1000);
+  assert.equal(turnQuietMs(ok(workingView('2h ago')), NOW), 120 * MINUTE);
+  assert.equal(turnQuietMs(ok(workingView('1 min ago')), NOW), MINUTE);
+  assert.equal(turnQuietMs(ok(workingView('just now')), NOW), 0);
+  // Not a running turn, a person to answer, or no time: null.
+  assert.equal(turnQuietMs(ok(workingView('45m ago', { activity: 'idle' })), NOW), null);
+  assert.equal(turnQuietMs(ok(workingView('45m ago', { liveness: 'exited' })), NOW), null);
+  assert.equal(turnQuietMs(ok(workingView('45m ago', { waitingOnHuman: 'AskUserQuestion' })), NOW), null);
+  assert.equal(turnQuietMs(ok(workingView('a while back')), NOW), null);
+  assert.equal(turnQuietMs(ok(workingView(undefined)), NOW), null);
+  assert.equal(turnQuietMs(/** @type {any} */ ({ kind: 'failed', code: 'x', detail: [] }), NOW), null);
+  // The --full view: projection.liveness.observedAt of the agent status.
+  const full = (/** @type {string} */ activity, /** @type {string} */ source = 'agent_status') =>
+    ok({
+      dispatch: { status: 'dispatched' },
+      projection: { stage: { activity }, liveness: { verdict: 'live', source, observedAt: ago(45 * MINUTE).getTime() } },
+    });
+  assert.equal(turnQuietMs(full('working'), NOW), 45 * MINUTE);
+  assert.equal(turnQuietMs(full('done'), NOW), null);
+  assert.equal(turnQuietMs(full('working', 'terminal'), NOW), null);
+});
+
+test('fix 8: a busy tab whose agent sent no status for 15 minutes is idle with no report: one resume send, then the cap asks', () => {
+  assert.equal(STALE_TURN_MS, 15 * MINUTE);
+  assert.equal(RESUME_QUIET_MS, 2 * MINUTE);
+  const record = recordWith({ agent: 'claude' });
+  const busy = (/** @type {number | undefined} */ quietMs) => ({ state: 'busy', detail: ['Orca: worker ready, liveness live, activity working.'], ...(quietMs === undefined ? {} : { quietMs }) });
+
+  // The stall of the report: no wake, an escalation wake from Orca, and a timer wake all sent `wait`.
+  for (const flags of [{}, { wake: 'escalation', dispatch: 'disp-1' }, { wake: 'timer' }]) {
+    const label = JSON.stringify(flags);
+    assertAction(decideFeature(facts({ flags, record, worker: busy() })), 'wait');
+    assertAction(decideFeature(facts({ flags, record, worker: busy(14 * MINUTE) })), 'wait');
+    const send = assertAction(decideFeature(facts({ flags, record, worker: busy(45 * MINUTE) })), 'send');
+    assert.equal(send.reason, 'escalation', label);
+    assert.deepEqual(send.run, ['send', '--feature', 'demo', '--reason', 'escalation'], label);
+    assert.match(send.say, /sent no status for 45 min, so the turn ended with no report\. Send it the resume text\./, label);
+    assert.ok(send.detail.some((line) => /no Stop hook on an interrupted turn/.test(line)), label);
+  }
+  // A fresh call sends too, in place of the tab-still-runs stop.
+  assertAction(decideFeature(facts({ flags: { fresh: true }, record, worker: busy(5 * MINUTE) })), 'stop');
+  assertAction(decideFeature(facts({ flags: { fresh: true }, record, worker: busy(45 * MINUTE) })), 'send');
+  // The user said "resume": an escalation wake that names no dispatch sends after 2 quiet minutes.
+  assertAction(decideFeature(facts({ flags: { wake: 'escalation' }, record, worker: busy(MINUTE) })), 'wait');
+  assertAction(decideFeature(facts({ flags: { wake: 'escalation' }, record, worker: busy(3 * MINUTE) })), 'send');
+  assertAction(decideFeature(facts({ flags: { wake: 'escalation', dispatch: 'disp-1' }, record, worker: busy(3 * MINUTE) })), 'wait');
+  // Any agent: a dsh tab too.
+  assertAction(decideFeature(facts({ record: recordWith({ agent: 'dsh' }), worker: busy(45 * MINUTE) })), 'send');
+  // The done proof holds: the report request.
+  const report = assertAction(decideFeature(facts({ docs: phaseOneComplete(), record: recordWith({ agent: 'claude' }), worker: busy(45 * MINUTE) })), 'send');
+  assert.equal(report.reason, 'report');
+  // After its one send, the cap asks the user.
+  const capped = assertAction(decideFeature(facts({ record: recordWith({ agent: 'claude', escalations: ESCALATION_CAP }), worker: busy(45 * MINUTE) })), 'ask');
+  assert.equal(capped.reason, 'escalation-cap');
+  assert.ok(capped.detail.some((line) => /sent no status for 45 min/.test(line)));
+});
+
+test('fix 8: next reads the quiet time of a busy claude tab from worker-show, and sends the resume text', () => {
+  const root = makeProject({ config: { version: 1, orchestration: { stages: { implement: 'claude' } } } });
+  try {
+    gitIn(root, ['switch', '-q', '-c', 'feat/demo']);
+    writeRecord(root, 'demo', recordWith({ agent: 'claude', startedAt: ago(60 * MINUTE).toISOString() }).record);
+    const fake = fakeRunner({ status: RUNNING, 'worker-show': envelope(workingView('45m ago')) });
+    const next = (/** @type {string[]} */ flags) => orcaStep(root, ['next', '--feature', 'demo', ...flags], { runner: fake.runner }).json;
+    const json = assertAction(next(['--wake', 'escalation', '--dispatch', 'disp-1']), 'send');
+    assert.equal(json.run, lineOf(root, ['send', '--feature', 'demo', '--reason', 'escalation']));
+    assert.ok(!fake.orca().some((args) => args[1] === 'inbox' && args[2] === '--terminal'), 'a claude tab reads no mail');
+    // A turn that still sends status waits, and its wait names the timer.
+    fake.answers['worker-show'] = envelope(workingView('1m ago'));
+    const wait = assertAction(next([]), 'wait');
+    assert.match(wait.timer.run, / orca next --feature demo --wake timer /);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Fix 9: a tab that asked a question waits on the coordinator, not on itself
+// ---------------------------------------------------------------------------
+
+/** One row of `inbox --run <id> --full --json`, as Orca names its fields. */
+function runMailRow(/** @type {Record<string, any>} */ fields) {
+  return {
+    id: 'msg_x',
+    run_id: 'run-1',
+    from_handle: 'term-7',
+    to_handle: 'run:run-1',
+    subject: 'Question',
+    body: '',
+    type: 'status',
+    thread_id: null,
+    payload: null,
+    read: 1,
+    created_at: ago(12 * MINUTE).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    delivered_at: null,
+    ...fields,
+  };
+}
+
+/** The question of the report: from the dispatch of the tab to the run, with a JSON payload. */
+const QUESTION_ROW = runMailRow({
+  id: 'msg_q1',
+  from_handle: 'dispatch:disp-1',
+  type: 'question',
+  thread_id: 'msg_q1',
+  body: 'The plan stop check waits for the owner. All hold?',
+  payload: JSON.stringify({ taskId: 'task-1', dispatchId: 'disp-1', question: 'The plan stop check waits for the owner. All hold?', options: ['All hold', 'Change one'] }),
+});
+
+test('fix 9: openQuestions finds the question of a dispatch that no reply answers, and nothing else', () => {
+  const ok = (/** @type {any[]} */ messages) => /** @type {any} */ ({ kind: 'ok', result: { messages, count: messages.length }, detail: [] });
+  const open = openQuestions(ok([QUESTION_ROW]), { dispatchId: 'disp-1' });
+  assert.deepEqual(open.questions, [
+    { id: 'msg_q1', question: 'The plan stop check waits for the owner. All hold?', options: ['All hold', 'Change one'], createdAt: ago(12 * MINUTE).toISOString() },
+  ]);
+  assert.match(open.detail[0], /the question msg_q1 of dispatch:disp-1 has no answer yet/);
+  // The answer of `reply`: a message to the tab whose thread_id names the question.
+  const answer = runMailRow({ id: 'msg_a1', from_handle: 'run:run-1', to_handle: 'dispatch:disp-1', thread_id: 'msg_q1', subject: 'Re: Question' });
+  assert.deepEqual(openQuestions(ok([answer, QUESTION_ROW]), { dispatchId: 'disp-1' }).questions, []);
+  // Read and delivered_at do not tell: a question that a coordinator `check` read, with delivered_at null, is open.
+  assert.equal(openQuestions(ok([{ ...QUESTION_ROW, read: 1, delivered_at: null }]), { dispatchId: 'disp-1' }).questions.length, 1);
+  // A question of another tab, an escalation, and a worker_done are not questions of this tab.
+  assert.deepEqual(openQuestions(ok([QUESTION_ROW]), { dispatchId: 'disp-2' }).questions, []);
+  const escalation = runMailRow({ id: 'msg_stop_1', type: 'escalation', payload: JSON.stringify({ dispatchId: 'disp-1', stopReason: 'finished' }) });
+  assert.deepEqual(openQuestions(ok([escalation]), { dispatchId: 'disp-1' }).questions, []);
+  // The payload names the dispatch when the sender is the terminal; the body stands in for a payload with no text; CSV options.
+  const byTerminal = runMailRow({ id: 'msg_q2', type: 'question', body: 'Which?', payload: JSON.stringify({ dispatchId: 'disp-1', options: 'a, b' }) });
+  assert.deepEqual(openQuestions(ok([byTerminal]), { dispatchId: 'disp-1' }).questions.map((q) => [q.id, q.question, q.options]), [['msg_q2', 'Which?', ['a', 'b']]]);
+  // Every fault is no question.
+  for (const bad of [null, { kind: 'failed', code: 'x', detail: [] }, { kind: 'ok', result: {}, detail: [] }, ok([{ ...QUESTION_ROW, payload: '{', body: '' }]), ok(['x'])]) {
+    assert.deepEqual(openQuestions(/** @type {any} */ (bad), { dispatchId: 'disp-1' }).questions, []);
+  }
+});
+
+test('fix 9: an idle tab with an open question gets the question action, not the resume send or the escalation cap', () => {
+  const record = recordWith({ agent: 'claude' });
+  const questions = openQuestions(/** @type {any} */ ({ kind: 'ok', result: { messages: [QUESTION_ROW] }, detail: [] }), { dispatchId: 'disp-1' });
+  const idle = { state: 'idle', detail: ['Orca: worker ready, liveness live, activity idle.'], questions };
+  // The report: the timer wake after one send, with the escalation cap reached.
+  const capped = recordWith({ agent: 'claude', escalations: ESCALATION_CAP });
+  for (const [flags, rec] of /** @type {[Record<string, any>, any][]} */ ([[{ wake: 'timer' }, capped], [{ wake: 'timer' }, record], [{ fresh: true }, record], [{}, record], [{ wake: 'escalation', dispatch: 'disp-1' }, capped]])) {
+    const label = JSON.stringify(flags);
+    const action = assertAction(decideFeature(facts({ flags, record: rec, worker: idle })), 'question');
+    assert.deepEqual(action.questions, [{ id: 'msg_q1', question: 'The plan stop check waits for the owner. All hold?', options: ['All hold', 'Change one'] }], label);
+    assert.match(action.say, /asked a question, and it waits for the answer/, label);
+    assert.equal(action.dispatchId, 'disp-1');
+    assert.ok(action.detail.some((line) => /msg_q1/.test(line)), label);
+    assert.equal(action.run, undefined, 'the coordinator answers with reply, so the action names no run line');
+  }
+  // With no open question, the same facts keep the old answers: the cap asks, and a first judge sends.
+  const { questions: _drop, ...bare } = idle;
+  assert.equal(assertAction(decideFeature(facts({ flags: { wake: 'timer' }, record: capped, worker: bare })), 'ask').reason, 'escalation-cap');
+  assertAction(decideFeature(facts({ flags: { wake: 'timer' }, record, worker: bare })), 'send');
+  // A busy tab with a stale turn and an open question: the question too (fix 8 would send the resume text).
+  const stale = { state: 'busy', detail: [], quietMs: 45 * MINUTE, questions };
+  assertAction(decideFeature(facts({ record, worker: stale })), 'question');
+  // A dsh tab with undelivered mail and an open question: the question comes first.
+  const dsh = { ...idle, mail: { messages: [{ id: 'msg_m' }], detail: [] } };
+  assertAction(decideFeature(facts({ record: recordWith({ agent: 'dsh' }), worker: dsh })), 'question');
+  // A stop request still stops first.
+  assert.notEqual(decideFeature(facts({ flags: { stop: true }, record, worker: idle })).action, 'question');
+});
+
+test('fix 9: wantsOpenQuestions reads the run mail only for a tab that rule A4 would judge', () => {
+  const active = recordWith({ agent: 'claude' }).record.active;
+  assert.equal(wantsOpenQuestions({}, active, { state: 'idle', detail: [] }), true);
+  assert.equal(wantsOpenQuestions({}, active, { state: 'busy', detail: [], quietMs: 45 * MINUTE }), true);
+  assert.equal(wantsOpenQuestions({}, active, { state: 'busy', detail: [], quietMs: MINUTE }), false);
+  assert.equal(wantsOpenQuestions({}, active, { state: 'busy', detail: [] }), false);
+  assert.equal(wantsOpenQuestions({}, active, { state: 'done', detail: [] }), false);
+  assert.equal(wantsOpenQuestions({ stop: true }, active, { state: 'idle', detail: [] }), false);
+  assert.equal(wantsOpenQuestions({}, { ...active, runId: null }, { state: 'idle', detail: [] }), false);
+  assert.equal(wantsOpenQuestions({}, null, { state: 'idle', detail: [] }), false);
+  // Fix 7 comes first: a lost worker_done of the tab makes it done, so the read is of no use. A lost escalation,
+  // or a lost worker_done of another tab, does not stop the read.
+  const lost = (/** @type {string} */ kind, dispatch = 'disp-1') => ({ mailWakes: [{ id: 'msg_lost', kind, dispatch, stopReason: null, createdAt: ago(5 * MINUTE).toISOString() }] });
+  assert.equal(wantsOpenQuestions(lost('worker_done'), active, { state: 'idle', detail: [] }), false);
+  assert.equal(wantsOpenQuestions(lost('worker_done'), active, { state: 'busy', detail: [], quietMs: 45 * MINUTE }), false);
+  assert.equal(wantsOpenQuestions(lost('escalation'), active, { state: 'idle', detail: [] }), true);
+  assert.equal(wantsOpenQuestions(lost('worker_done', 'disp-2'), active, { state: 'idle', detail: [] }), true);
+});
+
+test('fix 7 with fix 9: a lost worker_done comes before an open question, and a lost escalation does not', () => {
+  const record = recordWith({ agent: 'claude' });
+  const questions = openQuestions(/** @type {any} */ ({ kind: 'ok', result: { messages: [QUESTION_ROW] }, detail: [] }), { dispatchId: 'disp-1' });
+  const idle = { state: 'idle', detail: [], questions };
+  const lost = (/** @type {string} */ kind) => ({ wake: 'timer', mailWakes: [{ id: 'msg_lost', kind, dispatch: 'disp-1', stopReason: null, createdAt: ago(5 * MINUTE).toISOString() }] });
+  // The worker_done reached the Run: the tab reported, so rule A3 judges it, and its done proof closes it.
+  const closed = assertAction(decideFeature(facts({ flags: lost('worker_done'), docs: phaseOneComplete(), record, worker: idle })), 'close');
+  assert.equal(closed.stage, 'phase');
+  // A lost escalation is an escalation wake, and the tab still waits on its question: no resume send.
+  assertAction(decideFeature(facts({ flags: lost('escalation'), record, worker: idle })), 'question');
+  // A busy tab with a stale turn and an open question: the question too, also with a lost escalation.
+  assertAction(decideFeature(facts({ flags: lost('escalation'), record, worker: { state: 'busy', detail: [], quietMs: 45 * MINUTE, questions } })), 'question');
+});
+
+test('fix 9: next reads the run mail of an idle tab, and shows its open question in place of the escalation cap', () => {
+  const root = makeProject({ config: { version: 1, orchestration: { stages: { implement: 'claude' } } } });
+  try {
+    gitIn(root, ['switch', '-q', '-c', 'feat/demo']);
+    writeRecord(root, 'demo', recordWith({ agent: 'claude', escalations: ESCALATION_CAP }).record);
+    const idleView = { dispatchId: 'disp-1', state: 'ready', stage: 'input_accepted', liveness: 'live', activity: 'idle', terminal: 'term-7' };
+    const fake = fakeRunner({ status: RUNNING, 'worker-show': envelope(idleView), inbox: envelope({ messages: [QUESTION_ROW], count: 1 }) });
+    const next = () => orcaStep(root, ['next', '--feature', 'demo', '--wake', 'timer'], { runner: fake.runner }).json;
+    const json = assertAction(next(), 'question');
+    assert.equal(json.questions[0].id, 'msg_q1');
+    assert.deepEqual(fake.orca().at(-1), ['orchestration', 'inbox', '--run', 'run-1', '--limit', '50', '--full', '--json']);
+    // Once the reply is in the run mail, the old answer comes back: the cap asks.
+    fake.answers.inbox = envelope({ messages: [runMailRow({ id: 'msg_a1', from_handle: 'run:run-1', to_handle: 'dispatch:disp-1', thread_id: 'msg_q1' }), QUESTION_ROW], count: 2 });
+    assert.equal(assertAction(next(), 'ask').reason, 'escalation-cap');
+    // A failed read is no question.
+    fake.answers.inbox = envelope({}, { ok: false, status: 1, stderr: 'boom' });
+    assert.equal(assertAction(next(), 'ask').reason, 'escalation-cap');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('fix 9: both coordinator skills act on the question action, and answer it with reply', () => {
+  for (const name of ['orca-feature', 'orca-epic']) {
+    const skill = fs.readFileSync(path.join(PLUGIN_ROOT, 'templates', 'skills', name, 'SKILL.md'), 'utf8');
+    assert.ok(skill.includes('| `question` | A tab asked a question that has no answer yet'), name);
+    assert.ok(skill.includes('with the `id` of the entry as the message id'), name);
+    assert.ok(skill.includes('When the user answers a question wake, or a question of a `question` action:'), name);
+    assert.ok(skill.includes('so `next` answers `question` for it'), name);
+    // The quiet check of a timer wake (fix 7) still shows a question.
+    assert.ok(skill.includes('or it gives `stop`, `ask`, `question`, or a failed command'), name);
   }
 });

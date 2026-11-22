@@ -45,6 +45,8 @@ Commit `.beast-mode/orca.json`, so the team shares the settings.
     "stages": { "plan": "claude", "implement": "dsh", "verify": "dsh", "review": "claude", "docs": "dsh" },
     "commit": "phase",
     "concurrent": true,
+    "backstopSeconds": 600,
+    "statusEveryMinutes": 30,
     "steps": [
       { "after": "feature", "command": "/review-ux {feature}", "agent": "claude" }
     ]
@@ -68,6 +70,8 @@ Commit `.beast-mode/orca.json`, so the team shares the settings.
 | `steps[i].command` | 1 to 200 characters, starts with `/`, one line | none | `step-command` |
 | tokens in `command` | see "Custom steps" | none | `step-token` |
 | `steps[i].agent` | `"claude"` or `"dsh"` | none | `step-agent` |
+| `backstopSeconds` | a whole number of seconds, 60 to 86400: the backstop timer of every wait | `600` | `backstop-value` |
+| `statusEveryMinutes` | a whole number of minutes, 1 to 1440: the most often a quiet timer check posts a "still working" line | `30` | `status-every-value` |
 | any other key in `orchestration` | refused | none | `orchestration-unknown-key` |
 
 - `verify` and `docs` follow `implement` when the file names no value. A changed build agent therefore opens no surprise verify tab.
@@ -203,7 +207,8 @@ The `agents` object of `.beast-mode/orca.json` belongs to the launch settings of
 - `/orca-setup` asks no question about commands. Edit `agents` by hand or in the launch settings.
 - A start result `ready-unconfirmed` means that Orca did not confirm the ready state. It is not a fault, and the run goes on.
 - A failed start leaves its terminal open. Close it in Orca.
-- Orca does not own a terminal that the project command opened, so it leaves the tab open after `worker-release`. The `close` step (and the `merge` step of a lane) closes that terminal with `terminal close --terminal <handle>`, only when the run record shows that the start opened it. A start, a retry, and an agent-path tab never close a terminal. When the close fails, the step stays good, names the tab, and the tab stays open for you to close in Orca.
+- Each first start gives the Orca Task a short title (`--task-title`), and Orca shows it as the tab title, for example `nebula-light: Phase 2 implement`, `nebula-light: review fixes`, or `map-view: epic docs`. The feature name comes first, so the tabs of one run sort together, and the title has at most 60 characters. Orca opens the worker tab of the agent path with the fixed title `worker-<taskId>`, and that title protects the tab from the Task title. So after every good start that has a terminal handle, the step runs `terminal rename` with the same title, and the result holds `tabTitled: true` or `false`. A failed rename never fails the start. On the command path, the rename runs after the Enter loop of a dsh tab, so it never delays the prompt. A retry opens a new tab, and the step renames it too. A start with no terminal handle runs no rename. The rename does not change the agent status of the worker.
+- Orca does not own a terminal that the project command opened, so it leaves the tab open after `worker-release`. The `close` step (and the `merge` step of a lane) closes that terminal with `terminal close --terminal <handle>`, only when the run record shows that the start opened it. A start, a retry, and an agent-path tab never close a terminal. When the close fails, or when Orca refuses to release the dispatch (the worker can still run), the step stays good, closes no terminal, names the tab, and says that the tab stays open for you to close in Orca.
 
 A dsh tab refuses Enter until its session opens, and it keeps the prompt as a draft. Orca presses Enter only one time. So after each good start of a dsh tab, with or without a project command, `start` reads the tab and presses Enter every 2 seconds until the turn starts. It stops after 45 seconds, and it presses nothing while the tab waits on a person. A Claude Code tab gets no extra Enter. The start result names `submit`: `confirmed` or `unconfirmed`. `unconfirmed` is not a fault. When the prompt is still a draft in the tab, press Enter there yourself.
 
@@ -227,7 +232,7 @@ Every step prints one JSON object with `"schema": 1` and nothing else. Every dec
 | `merge` | Merges a lane into the epic branch and removes its worktree |
 | `send` | Sends a worker a message: open tasks, a resume, a report request, or a missing verdict |
 | `reply` | Answers a question of a worker |
-| `note` | Writes a user message to the inbox, or sends it to the running tab |
+| `note` | Writes a user message to the inbox, or sends it to the running tab. A tab that has ended its work (Orca reads its worker settled) gets no send, so no follow-up dispatch starts behind an ask or a close |
 | `detect` | Reads the machine and the settings for `/orca-setup` |
 | `config` | Prints the settings. With `--write <file>`, writes the `orchestration` object |
 
@@ -241,6 +246,7 @@ Every step takes `--project <dir>` and `--plugin-root <dir>`.
 | `close` | Prints the slice block, runs the `run` line, then calls `next` |
 | `wait` | Ends its turn. Orca wakes it when a worker reports |
 | `ask` | Asks you in one plain chat message, ends its turn, and runs the line of the option that you pick |
+| `question` | A tab asked a question that has no answer yet. Shows it to you as a question wake, ends its turn, and sends your answer with `reply` |
 | `stop` | Shows the reason, the detail lines, and the fix, and ends the run |
 | `done` | Prints the summary, and ends the run |
 

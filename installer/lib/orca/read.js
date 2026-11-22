@@ -52,6 +52,8 @@ const MAX_FEATURE_PATH = 200;
  * @property {'phase' | 'feature'} commit
  * @property {boolean} concurrent
  * @property {unknown[]} steps
+ * @property {number} backstopSeconds The backstop timer of every wait, in seconds (fix 7).
+ * @property {number} statusEveryMinutes The most often the coordinator posts a "still working" line, in minutes (fix 7).
  */
 
 /**
@@ -101,7 +103,27 @@ function invalid(code, at) {
 export const STAGE_KEYS = ['plan', 'implement', 'verify', 'review', 'docs'];
 
 /** The keys of the `orchestration` object that this version takes. */
-export const ORCHESTRATION_KEYS = ['stages', 'commit', 'concurrent', 'steps'];
+export const ORCHESTRATION_KEYS = ['stages', 'commit', 'concurrent', 'steps', 'backstopSeconds', 'statusEveryMinutes'];
+
+/**
+ * Fix 7: the bounds and the default of each whole-number setting of the
+ * orchestration object. `backstopSeconds` is the backstop timer of a wait on
+ * a dsh tab. `statusEveryMinutes` is the most often the coordinator posts a
+ * "still working" line on a timer wake that changed nothing.
+ */
+export const NUMBER_SETTINGS = {
+  backstopSeconds: { min: 60, max: 86400, fallback: 600, code: 'backstop-value' },
+  statusEveryMinutes: { min: 1, max: 1440, fallback: 30, code: 'status-every-value' },
+};
+
+/**
+ * @param {unknown} value
+ * @param {{ min: number, max: number }} bounds
+ * @returns {value is number} A whole number inside the bounds.
+ */
+function inBounds(value, bounds) {
+  return typeof value === 'number' && Number.isInteger(value) && value >= bounds.min && value <= bounds.max;
+}
 
 /** The most lines that `orchestration.steps` holds. */
 export const MAX_STEPS = 16;
@@ -327,6 +349,9 @@ function checkOrchestration(raw, problem) {
       if (!COMMIT_VALUES.includes(/** @type {string} */ (value))) problem('commit-value', at);
     } else if (key === 'steps') {
       checkSteps(value, problem);
+    } else if (hasKey(NUMBER_SETTINGS, key)) {
+      const bounds = NUMBER_SETTINGS[/** @type {keyof typeof NUMBER_SETTINGS} */ (key)];
+      if (!inBounds(value, bounds)) problem(bounds.code, at);
     } else if (typeof value !== 'boolean') {
       problem('concurrent-value', at);
     }
@@ -343,7 +368,9 @@ function checkOrchestration(raw, problem) {
  * `stages-not-object`, `stage-unknown`, `stage-agent`, `commit-value`,
  * `concurrent-value`, the step codes (`steps-not-array`, `steps-too-many`,
  * `step-not-object`, `step-unknown-key`, `step-after`, `step-command`,
- * `step-token`, `step-agent`), and `orchestration-unknown-key`. The reader stops at
+ * `step-token`, `step-agent`), `backstop-value` (a whole number of seconds,
+ * 60 to 86400), `status-every-value` (a whole number of minutes, 1 to
+ * 1440), and `orchestration-unknown-key`. The reader stops at
  * 20 problems. An unknown top-level key stays in the parsed file. A file
  * with no `orchestration` key is valid, and its resolved object is null.
  * Never throws.
@@ -414,6 +441,12 @@ export function resolveOrchestration(raw) {
     commit: source.commit === 'feature' ? 'feature' : 'phase',
     concurrent: source.concurrent !== false,
     steps: Array.isArray(source.steps) ? source.steps.slice() : [],
+    backstopSeconds: inBounds(source.backstopSeconds, NUMBER_SETTINGS.backstopSeconds)
+      ? source.backstopSeconds
+      : NUMBER_SETTINGS.backstopSeconds.fallback,
+    statusEveryMinutes: inBounds(source.statusEveryMinutes, NUMBER_SETTINGS.statusEveryMinutes)
+      ? source.statusEveryMinutes
+      : NUMBER_SETTINGS.statusEveryMinutes.fallback,
   };
 }
 
@@ -523,12 +556,16 @@ const PHASE_LEAD = /^phase\s+[^\s:]+\s*(?:[:.–—-]\s*)?/i;
 const TASK_LINE = /^[-*]\s+\\?\[([ xX])\\?\]\s*(.*)$/;
 const COUNT_GROUP = /\(\d+\/\d+/;
 const DEMO_LABEL = '**Demo:**';
+/** A heading that marks its phase out of this run: DEFERRED, SKIPPED, or (NOT|OUT OF) SCOPE. */
+const DEFERRED_HEADING = /\b(?:deferred|skipped|not in scope|out of scope)\b/i;
 
 /**
  * Parse the phases of a tasks.md text, by the rule of
  * `hooks/lib/tasks.ts:39-85`. Only a `## Phase <n>` heading opens a phase,
  * and the next `# ` or `## ` line closes it, so a `###` group stays inside
- * its phase, and the bug and debt sections count nowhere. A task line
+ * its phase, and the bug and debt sections count nowhere. A phase whose
+ * heading says DEFERRED, SKIPPED, NOT IN SCOPE or OUT OF SCOPE is no phase
+ * of the run, and its lines count nowhere either. A task line
  * matches `^[-*]\s+\\?\[([ xX])\\?\]\s*(.*)$`. Never throws.
  *
  * @param {unknown} text
@@ -546,6 +583,9 @@ export function parseTasks(text) {
       open = null;
       if (PHASE_HEADING.test(line)) {
         const heading = line.replace(/^##\s+/, '');
+        // A deferred phase is no phase of this run: it opens no tab and its
+        // lines count nowhere, as a bug or debt section counts nowhere.
+        if (DEFERRED_HEADING.test(heading)) continue;
         const cut = COUNT_GROUP.exec(heading);
         const title = (cut === null ? heading : heading.slice(0, cut.index)).trim();
         const number = PHASE_NUMBER.exec(line);
@@ -590,6 +630,18 @@ export function parseTasks(text) {
  */
 export function isPhaseComplete(phase) {
   return Boolean(phase) && phase.total > 0 && phase.done === phase.total;
+}
+
+/**
+ * Is the value a phase number? A `## Phase <n>` heading gives a whole number
+ * from 0 up, so Phase 0 is a real phase. A check of a phase number uses this
+ * test, and never the truth of the value, because 0 is falsy.
+ *
+ * @param {unknown} value
+ * @returns {value is number}
+ */
+export function isPhaseNumber(value) {
+  return Number.isInteger(value) && /** @type {number} */ (value) >= 0;
 }
 
 /**
@@ -967,7 +1019,7 @@ export function stepVerdictName(point, index) {
 }
 
 /** A verdict file name of the briefs folder. */
-const VERDICT_FILE = /^orca-step-((?:phase-[1-9]\d{0,5})|feature|epic)-(\d{1,2})\.verdict\.md$/;
+const VERDICT_FILE = /^orca-step-((?:phase-(?:0|[1-9]\d{0,5}))|feature|epic)-(\d{1,2})\.verdict\.md$/;
 
 /** The longest evidence text that a fact holds. */
 const MAX_EVIDENCE = 4000;
@@ -1067,7 +1119,7 @@ export function demoResultOf(text) {
 }
 
 /** A phase verdict file name of the briefs folder. */
-const PHASE_VERDICT_FILE = /^orca-phase-([1-9]\d{0,5})\.verdict\.md$/;
+const PHASE_VERDICT_FILE = /^orca-phase-(0|[1-9]\d{0,5})\.verdict\.md$/;
 
 /**
  * @typedef {Object} PhaseVerdictFact One phase verdict file of the briefs folder.
@@ -1239,7 +1291,7 @@ function readActive(value) {
   return {
     ...value,
     stage: value.stage,
-    phase: Number.isInteger(value.phase) && /** @type {number} */ (value.phase) > 0 ? value.phase : null,
+    phase: isPhaseNumber(value.phase) ? value.phase : null,
     step: value.step ?? null,
     round: count(value.round, 0),
     agent: text(value.agent),
@@ -1284,7 +1336,7 @@ export function readFailedStart(value) {
   return {
     ...value,
     stage: text(value.stage),
-    phase: Number.isInteger(value.phase) && /** @type {number} */ (value.phase) > 0 ? value.phase : null,
+    phase: isPhaseNumber(value.phase) ? value.phase : null,
     agent: text(value.agent),
     at: text(value.at),
     code: text(value.code),
@@ -1317,7 +1369,8 @@ function readLargeChange(value) {
 
 /**
  * Normalize the `verify` entry of a record: the fix rounds of each phase,
- * `{ "<n>": { "round": k } }`. An entry with no whole round over -1 drops.
+ * `{ "<n>": { "round": k } }`, with `<n>` a phase number from 0 up. An entry
+ * with no whole round over -1 drops.
  *
  * @param {Record<string, unknown>} value
  * @returns {Record<string, { round: number }>}
@@ -1326,7 +1379,7 @@ function readVerify(value) {
   /** @type {Record<string, { round: number }>} */
   const out = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (!/^[1-9]\d{0,5}$/.test(key) || !isPlainObject(entry)) continue;
+    if (!/^(?:0|[1-9]\d{0,5})$/.test(key) || !isPlainObject(entry)) continue;
     const round = count(entry.round, -1);
     if (round >= 0) out[key] = { ...entry, round };
   }

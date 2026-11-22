@@ -336,6 +336,190 @@ function waitsOnPerson(result) {
   return typeof result.waitingOnHuman === 'string' && result.waitingOnHuman !== '' && result.waitingOnHuman !== 'unknown';
 }
 
+/** The rows of one `inbox` read: the newest 50 messages of the mailbox (fix 7). */
+export const INBOX_LIMIT = 50;
+
+/**
+ * @typedef {Object} UndeliveredMail The undelivered mail of one tab (fix 7).
+ * @property {{ id: string, type: string, subject: string, createdAt: string }[]} messages
+ *   The messages to `dispatch:<id>` that Orca never delivered (`delivered_at` is null), older than
+ *   `minAgeMs`, and not in `exclude`. Oldest first.
+ * @property {string[]} detail One line per message, for the action detail.
+ */
+
+/**
+ * Read the undelivered mail of one tab from an `inbox --full` answer. Orca
+ * queues a message to a tab while the tab runs a turn, and it delivers the
+ * message after the turn. A tab that ended its turn to wait for that
+ * message gets no next turn, so the message stays undelivered for ever.
+ * `read` does not tell: such a message reads 1. Every fault reads as no
+ * mail, so a failed read never changes a decision.
+ *
+ * @param {OrcaAnswer} answer The answer of orcaCalls.inbox().
+ * @param {{ dispatchId: string, now: Date, minAgeMs: number, exclude?: string[] }} opts
+ * @returns {UndeliveredMail}
+ */
+export function undeliveredMail(answer, { dispatchId, now, minAgeMs, exclude = [] }) {
+  /** @type {UndeliveredMail} */
+  const none = { messages: [], detail: [] };
+  if (!answer || answer.kind !== 'ok' || !isPlainObject(answer.result) || !Array.isArray(answer.result.messages)) return none;
+  const handle = `dispatch:${dispatchId}`;
+  const messages = [];
+  for (const row of answer.result.messages) {
+    if (!isPlainObject(row) || row.to_handle !== handle) continue;
+    if (row.delivered_at !== null && row.delivered_at !== undefined) continue;
+    if (typeof row.id !== 'string' || row.id === '' || exclude.includes(row.id)) continue;
+    const created = orcaTime(row.created_at);
+    if (created === null || now.getTime() - created.getTime() < minAgeMs) continue;
+    messages.push({
+      id: row.id,
+      type: typeof row.type === 'string' ? row.type : 'message',
+      subject: typeof row.subject === 'string' ? row.subject : '',
+      createdAt: created.toISOString(),
+    });
+  }
+  messages.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const detail = messages.map((message) => {
+    const minutes = Math.floor((now.getTime() - Date.parse(message.createdAt)) / 60000);
+    return `Orca: the ${message.type} message ${message.id} to ${handle} is undelivered, ${minutes} min after it was sent.`;
+  });
+  return { messages, detail };
+}
+
+/**
+ * @typedef {Object} MailWake One wake that Orca did not deliver to the coordinator (fix 7).
+ * @property {string} id The message id.
+ * @property {string} kind The message type, for example `worker_done` or `escalation`.
+ * @property {string} dispatch The dispatch id that the payload names.
+ * @property {string | null} stopReason The `stopReason` of the payload.
+ * @property {string} createdAt
+ */
+
+/**
+ * Read the wakes that Orca never delivered to the coordinator from a
+ * `runInbox` answer: messages to `run:<runId>` with `delivered_at` null,
+ * older than `minAgeMs`, whose payload names one of `dispatchIds`, and that
+ * are not a `question` (a question needs the user, never a step). Oldest
+ * first. Every fault reads as no wake.
+ *
+ * @param {OrcaAnswer} answer
+ * @param {{ runId: string, dispatchIds: string[], now: Date, minAgeMs: number }} opts
+ * @returns {MailWake[]}
+ */
+export function undeliveredWakes(answer, { runId, dispatchIds, now, minAgeMs }) {
+  if (!answer || answer.kind !== 'ok' || !isPlainObject(answer.result) || !Array.isArray(answer.result.messages)) return [];
+  /** @type {MailWake[]} */
+  const wakes = [];
+  for (const row of answer.result.messages) {
+    if (!isPlainObject(row) || row.to_handle !== `run:${runId}`) continue;
+    if (row.delivered_at !== null && row.delivered_at !== undefined) continue;
+    if (typeof row.id !== 'string' || row.id === '' || typeof row.type !== 'string' || row.type === 'question') continue;
+    const created = orcaTime(row.created_at);
+    if (created === null || now.getTime() - created.getTime() < minAgeMs) continue;
+    let payload = row.payload;
+    if (typeof payload === 'string') {
+      try {
+        payload = JSON.parse(payload);
+      } catch {
+        payload = null;
+      }
+    }
+    if (!isPlainObject(payload) || typeof payload.dispatchId !== 'string' || !dispatchIds.includes(payload.dispatchId)) continue;
+    wakes.push({
+      id: row.id,
+      kind: row.type,
+      dispatch: payload.dispatchId,
+      stopReason: typeof payload.stopReason === 'string' && payload.stopReason ? payload.stopReason : null,
+      createdAt: created.toISOString(),
+    });
+  }
+  return wakes.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/**
+ * @typedef {Object} OpenQuestions The questions of one tab that wait on the coordinator (fix 9).
+ * @property {{ id: string, question: string, options: string[], createdAt: string }[]} questions
+ *   The `question` messages of `dispatch:<id>` to the run mailbox that no message answers yet (no other
+ *   row names the question as its `thread_id`). Oldest first.
+ * @property {string[]} detail One line per question, for the action detail.
+ */
+
+/**
+ * Read the open questions of one tab from an `inbox --run --full` answer.
+ * A worker asks with the `ask` command of its preamble, and then it ends its
+ * turn to wait for the answer. Orca can hold that question from the
+ * coordinator (it typed no wake), so the tab is idle, and only the answer
+ * moves it on. The answer of `reply` is a message to the tab whose
+ * `thread_id` is the id of the question. `read` and `delivered_at` do not
+ * tell: a `check` of the coordinator marks the question read, and leaves
+ * `delivered_at` null. Every fault reads as no question, so a failed read
+ * never changes a decision.
+ *
+ * @param {OrcaAnswer} answer The answer of orcaCalls.runMail().
+ * @param {{ dispatchId: string }} opts
+ * @returns {OpenQuestions}
+ */
+export function openQuestions(answer, { dispatchId }) {
+  /** @type {OpenQuestions} */
+  const none = { questions: [], detail: [] };
+  if (!answer || answer.kind !== 'ok' || !isPlainObject(answer.result) || !Array.isArray(answer.result.messages)) return none;
+  const rows = answer.result.messages.filter(isPlainObject);
+  const answered = new Set(
+    rows.filter((row) => typeof row.thread_id === 'string' && row.thread_id !== row.id).map((row) => row.thread_id)
+  );
+  const questions = [];
+  for (const row of rows) {
+    if (row.type !== 'question' || typeof row.id !== 'string' || row.id === '' || answered.has(row.id)) continue;
+    if (typeof row.to_handle !== 'string' || !row.to_handle.startsWith('run:')) continue;
+    const payload = payloadOf(row.payload);
+    if (row.from_handle !== `dispatch:${dispatchId}` && payload.dispatchId !== dispatchId) continue;
+    const created = orcaTime(row.created_at);
+    const text = typeof payload.question === 'string' && payload.question ? payload.question : typeof row.body === 'string' ? row.body : '';
+    if (created === null || text === '') continue;
+    questions.push({ id: row.id, question: text, options: optionsOf(payload.options), createdAt: created.toISOString() });
+  }
+  questions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const detail = questions.map(
+    (question) => `Orca: the question ${question.id} of dispatch:${dispatchId} has no answer yet (sent ${question.createdAt}).`
+  );
+  return { questions, detail };
+}
+
+/**
+ * @param {unknown} value The `payload` of an `inbox --full` row: a JSON text, or an object.
+ * @returns {Record<string, any>}
+ */
+function payloadOf(value) {
+  if (isPlainObject(value)) return /** @type {Record<string, any>} */ (value);
+  if (typeof value !== 'string' || value === '') return {};
+  try {
+    const parsed = JSON.parse(value);
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * @param {unknown} value The `options` of a question payload: a list, or the CSV text of `ask --options`.
+ * @returns {string[]}
+ */
+function optionsOf(value) {
+  const list = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+  return list.filter((option) => typeof option === 'string').map((option) => option.trim()).filter((option) => option !== '');
+}
+
+/**
+ * @param {unknown} value An Orca time: ISO 8601, or the SQLite form "YYYY-MM-DD HH:MM:SS" in UTC.
+ * @returns {Date | null}
+ */
+function orcaTime(value) {
+  if (typeof value !== 'string' || value === '') return null;
+  const text = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value) ? `${value.replace(' ', 'T')}Z` : value;
+  const ms = Date.parse(text);
+  return Number.isNaN(ms) ? null : new Date(ms);
+}
+
 /**
  * Normalize a `worker-show` answer to one state of fact O3. The default
  * `--json` view names the worker state as `result.state`, with
@@ -416,6 +600,45 @@ export function normalizeWorker(answer) {
   }
 
   return { state: 'unknown', detail: ['worker-show named no dispatch status and no worker state.'], terminal: null };
+}
+
+/** The units of the `lastActivity` text of `worker-show --json`, such as "2m ago" (fix 8). */
+const AGO_UNITS = { s: 1000, m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
+
+/**
+ * How long a tab that Orca shows in a running turn has been quiet (fix 8):
+ * the time since the last status event of its agent. Orca sets the activity
+ * of a tab from the hooks of its agent, and only a Stop (or StopFailure) hook
+ * ends a turn. Claude Code runs no Stop hook when the user interrupts a turn
+ * (Esc), so Orca shows that tab as `working` for ever, and sends no wake.
+ * The default view names the time as `lastActivity` ("2m ago"); the `--full`
+ * view names it as `projection.liveness.observedAt` (epoch ms, source
+ * `agent_status`). Null when the tab is not live and `working`, when it
+ * waits on a person, or when Orca names no time.
+ *
+ * @param {OrcaAnswer} answer
+ * @param {Date} now
+ * @returns {number | null}
+ */
+export function turnQuietMs(answer, now) {
+  if (!answer || answer.kind !== 'ok' || !isPlainObject(answer.result)) return null;
+  const result = answer.result;
+  if (waitsOnPerson(result)) return null;
+  if (isPlainObject(result.dispatch)) {
+    const projection = isPlainObject(result.projection) ? result.projection : {};
+    const liveness = isPlainObject(projection.liveness) ? projection.liveness : {};
+    const activity = isPlainObject(projection.stage) ? projection.stage.activity : undefined;
+    if (result.dispatch.status !== 'dispatched' || liveness.verdict !== 'live' || activity !== 'working') return null;
+    if (liveness.source !== 'agent_status' || typeof liveness.observedAt !== 'number') return null;
+    return Math.max(0, now.getTime() - liveness.observedAt);
+  }
+  if (result.state !== 'ready' || result.activity !== 'working') return null;
+  if (typeof result.liveness !== 'string' || !result.liveness.startsWith('live')) return null;
+  if (typeof result.lastActivity !== 'string') return null;
+  const text = result.lastActivity.trim().toLowerCase();
+  if (text === 'just now' || text === 'now') return 0;
+  const match = /^(\d+)\s*([smhd])[a-z]*\s+ago$/.exec(text);
+  return match ? Number(match[1]) * AGO_UNITS[/** @type {'s' | 'm' | 'h' | 'd'} */ (match[2])] : null;
 }
 
 /**
@@ -550,6 +773,17 @@ function placementArgs(placement) {
 }
 
 /**
+ * The `--task-title` argument of a first start (fix 5): one argument, exactly
+ * as written. No title gives no argument. A custom tab title is never pinned.
+ *
+ * @param {string | undefined} title
+ * @returns {string[]}
+ */
+function titleArgs(title) {
+  return typeof title === 'string' && title.length > 0 ? ['--task-title', title] : [];
+}
+
+/**
  * The worktree selector of a lane for a later tab and for its removal
  * (fact O12). The path comes from `git worktree list --porcelain`, so a
  * run that lost the receipt still finds it.
@@ -607,8 +841,8 @@ export function receiptTerminal(result) {
 }
 
 /**
- * The Orca calls of §The steps, one builder each. Two reads (`status` and
- * `worker-show`) and the state changes. A retry of a failed start names the
+ * The Orca calls of §The steps, one builder each. Five reads (`status`,
+ * `worker-show`, `inbox`, `runInbox`, and `runMail`) and the state changes. A retry of a failed start names the
  * Task and the failed dispatch, never a spec, and it repeats the placement
  * and the agent, because Orca does not inherit them. `worktreeRemove`
  * takes no flag that stops a process or deletes the branch (fact O13), so a
@@ -619,14 +853,48 @@ export const orcaCalls = {
   status: () => orcaRead(['status', '--json']),
   /** @param {string} dispatchId @returns {Call} */
   workerShow: (dispatchId) => orcaRead(['orchestration', 'worker-show', '--dispatch', dispatchId, '--json']),
-  /** @param {{ specFile: string, agent: string, placement?: Placement }} opts @returns {Call} */
-  workerStart: ({ specFile, agent, placement }) =>
+  /**
+   * The mail of one tab (fix 7): `inbox` lists the mailbox and marks nothing
+   * read, so the tab still gets its mail. `--full` names `delivered_at`,
+   * which the concise view leaves out.
+   *
+   * @param {string} dispatchId @returns {Call}
+   */
+  inbox: (dispatchId) =>
+    orcaRead(['orchestration', 'inbox', '--terminal', `dispatch:${dispatchId}`, '--limit', String(INBOX_LIMIT), '--full', '--json']),
+  /**
+   * The mail of the coordinator (fix 7): the mailbox of the Run, read with
+   * the same no-mark `inbox --full`. A wake that Orca failed to deliver to
+   * the coordinator stays here with `delivered_at` null.
+   *
+   * @param {string} runId @returns {Call}
+   */
+  runInbox: (runId) =>
+    orcaRead(['orchestration', 'inbox', '--terminal', `run:${runId}`, '--limit', String(INBOX_LIMIT), '--full', '--json']),
+  /**
+   * All the mail of one run (fix 9): the questions of its tabs and their
+   * answers. It is wider than `runInbox`: `--run` also lists the answers
+   * that `reply` sends to `dispatch:<id>`, and only an answer tells an open
+   * question from an answered one. `inbox` marks nothing read, so the
+   * coordinator still gets its wake.
+   *
+   * @param {string} runId @returns {Call}
+   */
+  runMail: (runId) => orcaRead(['orchestration', 'inbox', '--run', runId, '--limit', String(INBOX_LIMIT), '--full', '--json']),
+  /**
+   * `title` is the Task title, and Orca shows it as the tab title (fix 5).
+   * A retry names no title: the Task keeps it.
+   *
+   * @param {{ specFile: string, agent: string, placement?: Placement, title?: string }} opts @returns {Call}
+   */
+  workerStart: ({ specFile, agent, placement, title }) =>
     orcaChange(
       [
         'orchestration',
         'worker-start',
         '--spec-file',
         specFile,
+        ...titleArgs(title),
         ...placementArgs(placement),
         '--agent',
         agent,
@@ -683,11 +951,24 @@ export const orcaCalls = {
   /**
    * The command stays one argument, exactly as written. No `--title`: a
    * pinned title hides the title evidence that Orca reads for agent status
-   * (launch-config Decision 4).
+   * (launch-config Decision 4). The rule stays for `terminal create`. The
+   * tab title of the command path comes from `terminalRename` after the
+   * start (fix 6).
    *
    * @param {{ selector: string, command: string }} opts @returns {Call}
    */
   terminalCreate: ({ selector, command }) => orcaChange(['terminal', 'create', '--worktree', selector, '--command', command, '--json']),
+  /**
+   * Give a started tab its title (fix 6). Orca opens the worker tab of the
+   * agent path with the fixed title `worker-<taskId>`, and that title
+   * protects the tab, so Orca never applies the Task title to it. The
+   * command path opens its tab with no title. A rename after the start sets
+   * the title, and the agent status of the worker does not change. The
+   * title stays one argument. A state change: it never retries by itself.
+   *
+   * @param {{ terminal: string, title: string }} opts A handle of a started tab, and the Task title. @returns {Call}
+   */
+  terminalRename: ({ terminal, title }) => orcaChange(['terminal', 'rename', '--terminal', terminal, '--title', title, '--json']),
   /**
    * Close the terminal that our own command-path start opened (fix 3). Orca
    * does not own that terminal, so `worker-release` answers `retained` and
@@ -701,10 +982,10 @@ export const orcaCalls = {
   /** @param {string} terminal A handle from terminalCreate. @returns {Call} Exit 1 when the tab did not show ready. */
   terminalWait: (terminal) =>
     orcaRead(['terminal', 'wait', '--terminal', terminal, '--for', 'tui-idle', '--timeout-ms', TUI_IDLE_WAIT_MS, '--json'], TERMINAL_WAIT_TIMEOUT_MS),
-  /** @param {{ specFile: string, terminal: string, selector: string }} opts @returns {Call} */
-  workerAttach: ({ specFile, terminal, selector }) =>
+  /** @param {{ specFile: string, terminal: string, selector: string, title?: string }} opts @returns {Call} */
+  workerAttach: ({ specFile, terminal, selector, title }) =>
     orcaChange(
-      ['orchestration', 'worker-start', '--spec-file', specFile, '--terminal', terminal, '--worktree', selector, '--json'],
+      ['orchestration', 'worker-start', '--spec-file', specFile, ...titleArgs(title), '--terminal', terminal, '--worktree', selector, '--json'],
       WORKER_START_TIMEOUT_MS
     ),
   /**

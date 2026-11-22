@@ -48,6 +48,7 @@ import {
   inboxTime,
   insertInboxLine,
   isPhaseComplete,
+  isPhaseNumber,
   laneBranchOf,
   laneWorktree,
   newEpicRecord,
@@ -95,7 +96,12 @@ import {
   runBranchOf,
   sendCounts,
   setupStop,
+  COORDINATOR_MAIL_MS,
+  TIMER_WAKE,
+  UNDELIVERED_MAIL_MS,
   wantsDshChild,
+  wantsOpenQuestions,
+  wantsPendingMail,
 } from './decide.js';
 import { dshChildFact, showWorkspace } from './dsh.js';
 import {
@@ -111,6 +117,7 @@ import {
   reviewSpec,
   sendText,
   stepSpec,
+  taskTitleOf,
   verifySpec,
 } from './spec.js';
 import { detect, readConfigFacts, writeOrchestration } from './setup.js';
@@ -124,6 +131,10 @@ import {
   gitCalls,
   laneSelector,
   normalizeWorker,
+  openQuestions,
+  turnQuietMs,
+  undeliveredMail,
+  undeliveredWakes,
   orcaArgsForHost,
   orcaCalls,
   parsePorcelain,
@@ -257,6 +268,7 @@ export function runLine(cli, args) {
 export function renderAction(action, cli) {
   const out = { ...action };
   if (Array.isArray(out.run)) out.run = runLine(cli, out.run);
+  if (out.timer && Array.isArray(out.timer.run)) out.timer = { ...out.timer, run: runLine(cli, out.timer.run) };
   if (Array.isArray(out.options)) {
     out.options = out.options.map((option) => ({
       ...option,
@@ -388,6 +400,7 @@ const STEP_OPTIONS = {
     'accept-dirty': { type: 'boolean' },
     wake: { type: 'string' },
     dispatch: { type: 'string' },
+    'stop-reason': { type: 'string' },
     stop: { type: 'boolean' },
   },
   branch: { feature: { type: 'string' }, epic: { type: 'string' } },
@@ -408,7 +421,7 @@ const STEP_OPTIONS = {
   },
   commit: { feature: { type: 'string' }, epic: { type: 'string' }, point: { type: 'string' }, phase: { type: 'string' } },
   merge: { feature: { type: 'string' }, epic: { type: 'string' } },
-  send: { feature: { type: 'string' }, epic: { type: 'string' }, reason: { type: 'string' } },
+  send: { feature: { type: 'string' }, epic: { type: 'string' }, reason: { type: 'string' }, mail: { type: 'boolean' } },
   reply: { id: { type: 'string' }, 'body-file': { type: 'string' } },
   note: { feature: { type: 'string' }, kind: { type: 'string' }, 'text-file': { type: 'string' } },
   detect: {},
@@ -418,7 +431,8 @@ const STEP_OPTIONS = {
 /**
  * Parse the flags of one step. Throws a UsageError for an unknown flag, a
  * missing value, a positional argument, a missing `--feature`, and a
- * `--phase` that is not a whole number over zero.
+ * `--phase` that is not a whole number from 0 up. Phase 0 is a real phase:
+ * a `## Phase 0` heading of tasks.md gives it.
  *
  * @param {string} step
  * @param {string[]} args
@@ -535,10 +549,10 @@ function parseStepArgs(step, args) {
       `Run "beast-mode orca ${step} --feature <feature-name> --phase <n>".`
     );
   }
-  if (values.phase !== undefined && !/^[1-9]\d{0,5}$/.test(values.phase)) {
+  if (values.phase !== undefined && !/^(?:0|[1-9]\d{0,5})$/.test(values.phase)) {
     throw new UsageError(
       `"--phase ${values.phase}" names no phase.`,
-      'The "--phase" flag takes a whole number that is greater than zero.',
+      'The "--phase" flag takes a whole number from 0 up.',
       `Run "beast-mode orca ${step}" with "--phase 1", for example.`
     );
   }
@@ -854,6 +868,7 @@ function gatherFeatureFacts(run) {
       fresh: values.fresh === true,
       wake: typeof values.wake === 'string' && values.wake ? values.wake : null,
       dispatch: typeof values.dispatch === 'string' && values.dispatch ? values.dispatch : null,
+      stopReason: typeof values['stop-reason'] === 'string' && values['stop-reason'] ? values['stop-reason'] : null,
       stop: values.stop === true,
       acceptDirty: values['accept-dirty'] === true,
     },
@@ -884,7 +899,10 @@ function stepNext(run) {
   if (setupStop(facts) === null) {
     if (facts.flags.fresh) facts.orcaStatus = readOrcaStatus(run);
     const active = facts.record.record?.active;
-    if (active) facts.worker = readWorker(run, facts.flags, facts.config, active, run.projectRoot);
+    if (active) {
+      facts.flags.mailWakes = readLostWakes(run, facts.flags, [active]);
+      facts.worker = readWorker(run, facts.flags, facts.config, active, run.projectRoot);
+    }
   }
   return renderAction(decideFeature(facts), run.cli);
 }
@@ -904,10 +922,89 @@ function stepNext(run) {
  */
 function readWorker(run, flags, config, active, root) {
   const answer = orcaCall(run, orcaCalls.workerShow(active.dispatchId));
-  const worker = normalizeWorker(answer);
-  if (!wantsDshChild(flags, active, worker)) return worker;
-  const workspace = showWorkspace(answer) ?? (typeof active.worktree === 'string' && active.worktree ? active.worktree : root);
-  return { ...worker, child: dshChildFact({ config, env: run.env, platform: run.platform, now: run.now(), active, workspace }) };
+  /** @type {import('./decide.js').WorkerFact} */
+  let worker = normalizeWorker(answer);
+  // Fix 8: a busy tab names how long it has been quiet, so a turn that ended with no Stop hook is found.
+  const quietMs = worker.state === 'busy' ? turnQuietMs(answer, run.now()) : null;
+  if (quietMs !== null) worker = { ...worker, quietMs };
+  if (wantsDshChild(flags, active, worker)) {
+    const workspace = showWorkspace(answer) ?? (typeof active.worktree === 'string' && active.worktree ? active.worktree : root);
+    worker = { ...worker, child: dshChildFact({ config, env: run.env, platform: run.platform, now: run.now(), active, workspace }) };
+  }
+  if (wantsPendingMail(flags, active, worker)) worker = { ...worker, mail: readPendingMail(run, active) };
+  if (wantsOpenQuestions(flags, active, worker)) {
+    const questions = readOpenQuestions(run, active);
+    if (questions.questions.length > 0) worker = { ...worker, questions };
+  }
+  return worker;
+}
+
+/**
+ * The wakes that Orca never delivered to the coordinator (fix 7), read on a
+ * timer wake or a fresh call only: the mailbox of each Run of the active
+ * tabs, with the no-mark `inbox --full`, for messages about those tabs older
+ * than COORDINATOR_MAIL_MS. A failed read is no wake.
+ *
+ * @param {StepRun} run
+ * @param {import('./decide.js').FeatureFacts['flags']} flags
+ * @param {Record<string, any>[]} actives
+ * @returns {import('./exec.js').MailWake[]}
+ */
+function readLostWakes(run, flags, actives) {
+  if (flags.stop === true || (flags.fresh !== true && flags.wake !== TIMER_WAKE)) return [];
+  const dispatchIds = actives.map((active) => active.dispatchId).filter((id) => typeof id === 'string' && id);
+  const runIds = [...new Set(actives.map((active) => active.runId).filter((id) => typeof id === 'string' && id))];
+  /** @type {import('./exec.js').MailWake[]} */
+  const wakes = [];
+  for (const runId of runIds) {
+    try {
+      const answer = orcaCall(run, orcaCalls.runInbox(runId));
+      wakes.push(...undeliveredWakes(answer, { runId, dispatchIds, now: run.now(), minAgeMs: COORDINATOR_MAIL_MS }));
+    } catch {
+      // No wake.
+    }
+  }
+  return wakes;
+}
+
+/**
+ * The open questions of one tab (fix 9): the `question` messages of
+ * `dispatch:<id>` in the mail of the run (`runMail`, not the `runInbox`
+ * read of fix 7, which lists no answer) that no `reply` answers yet.
+ * `inbox` marks nothing read, so the coordinator still gets its wake. A
+ * failed read is no question.
+ *
+ * @param {StepRun} run
+ * @param {Record<string, any>} active
+ * @returns {import('./exec.js').OpenQuestions}
+ */
+function readOpenQuestions(run, active) {
+  try {
+    return openQuestions(orcaCall(run, orcaCalls.runMail(active.runId)), { dispatchId: active.dispatchId });
+  } catch {
+    return { questions: [], detail: [] };
+  }
+}
+
+/**
+ * The undelivered mail of one tab (fix 7): messages to `dispatch:<id>` that
+ * Orca has not delivered after UNDELIVERED_MAIL_MS, less the messages that
+ * an earlier send already named (`mailNamed` of the record), so one stuck
+ * message gets one send. `inbox` marks nothing read. A failed read is no
+ * mail.
+ *
+ * @param {StepRun} run
+ * @param {Record<string, any>} active
+ * @returns {import('./exec.js').UndeliveredMail}
+ */
+function readPendingMail(run, active) {
+  try {
+    const answer = orcaCall(run, orcaCalls.inbox(active.dispatchId));
+    const exclude = Array.isArray(active.mailNamed) ? active.mailNamed.filter((id) => typeof id === 'string') : [];
+    return undeliveredMail(answer, { dispatchId: active.dispatchId, now: run.now(), minAgeMs: UNDELIVERED_MAIL_MS, exclude });
+  } catch {
+    return { messages: [], detail: [] };
+  }
 }
 
 /**
@@ -1556,7 +1653,7 @@ function retryRefusal(step, feature, failed, stage, phase, stepIndex = null) {
     ]);
   }
   if (failed.stage !== stage || (failed.phase ?? null) !== phase || (stage === 'step' && (failed.step ?? null) !== stepIndex)) {
-    const named = failed.stage === 'phase' && failed.phase ? `Phase ${failed.phase}` : `the ${failed.stage} stage`;
+    const named = failed.stage === 'phase' && isPhaseNumber(failed.phase) ? `Phase ${failed.phase}` : `the ${failed.stage} stage`;
     return refusal(step, 'retry-mismatch', `The failed start of ${feature} is not this stage.`, [
       `The run record holds a failed start of ${named}.`,
     ]);
@@ -1742,17 +1839,19 @@ function startStage(run, checked, site) {
   const specFile = retry ? null : writeSpec(run.projectRoot, specRel, plan.spec);
   // The start entry goes in before the first Orca call, so a lost answer never reads as no tab (CR-2).
   writeRecord(run.projectRoot, feature, { ...base, active: null, failedStart: pendingStart(where, retry ? failed : null), largeChange: null });
+  // The Task title is the tab title (fix 5). Only a first start passes it: a retry keeps the title of its Task.
+  const title = taskTitleOf({ feature, stage, phase: phaseNumber, round: plan.verifyInfo?.round ?? null, command: plan.stepInfo?.command ?? null });
   /** @type {CommandLaunch | null} */
   let launched = null;
   let answer;
   if (command) {
-    launched = commandStart(run, { command, selector: tree ? laneSelector(tree) : CURRENT_WORKTREE, specFile, retry: retry ? failed : null });
+    launched = commandStart(run, { command, selector: tree ? laneSelector(tree) : CURRENT_WORKTREE, specFile, retry: retry ? failed : null, title });
     answer = launched.answer;
   } else if (retry) {
     const previous = /** @type {Record<string, any>} */ (failed);
     answer = orcaCall(run, orcaCalls.workerRetry({ taskId: previous.taskId, retryOf: previous.dispatchId, agent, placement }));
   } else {
-    answer = orcaCall(run, orcaCalls.workerStart({ specFile: /** @type {string} */ (specFile), agent, placement }));
+    answer = orcaCall(run, orcaCalls.workerStart({ specFile: /** @type {string} */ (specFile), agent, placement, title }));
   }
 
   const result = isPlainObject(answer.result) ? answer.result : {};
@@ -1797,6 +1896,8 @@ function startStage(run, checked, site) {
     }
     // The record holds the dispatch, so the submit loop of a dsh tab runs now (fix 1).
     const submitted = submitPrompt(run, { agent, dispatchId: active.dispatchId, terminal: launched?.terminal ?? receiptTerminal(result) });
+    // The rename runs after the submit loop (fix 6). A retry opens a new tab with the `worker-` title again, so it renames too.
+    const titled = renameTab(run, launched?.terminal ?? receiptTerminal(result) ?? submitted?.terminal, title);
     return withSubmit(
       success(step, `${retry ? 'Retried' : 'Started'} ${label} of ${feature} on ${agent}${launch.how}${tree ? ` in the worktree ${tree}` : ''}.${launch.note}`, {
         feature,
@@ -1813,7 +1914,8 @@ function startStage(run, checked, site) {
         retry,
         ...(retry ? { retryOf: failed?.dispatchId ?? null } : {}),
       }),
-      submitted
+      submitted,
+      titled
     );
   }
 
@@ -1884,11 +1986,11 @@ function writeSpec(root, specRel, body) {
  * terminal: a failed start names it, and the user closes it in Orca.
  *
  * @param {StepRun} run The run of the place. Every Orca call starts in its main workspace.
- * @param {{ command: string, selector: string, specFile: string | null, retry: Record<string, any> | null }} opts
- *   `specFile` for a start, or `retry`: the failed start, whose Task the retry names.
+ * @param {{ command: string, selector: string, specFile: string | null, retry: Record<string, any> | null, title?: string }} opts
+ *   `specFile` for a start, or `retry`: the failed start, whose Task the retry names. `title`: the Task title of a first start.
  * @returns {CommandLaunch}
  */
-function commandStart(run, { command, selector, specFile, retry }) {
+function commandStart(run, { command, selector, specFile, retry, title }) {
   const created = orcaCall(run, orcaCalls.terminalCreate({ selector, command }));
   const terminal = created.kind === 'ok' ? terminalHandleOf(created.result) : null;
   if (!terminal) {
@@ -1908,7 +2010,7 @@ function commandStart(run, { command, selector, specFile, retry }) {
     run,
     retry
       ? orcaCalls.workerAttachRetry({ taskId: retry.taskId, retryOf: retry.dispatchId, terminal, selector })
-      : orcaCalls.workerAttach({ specFile: /** @type {string} */ (specFile), terminal, selector })
+      : orcaCalls.workerAttach({ specFile: /** @type {string} */ (specFile), terminal, selector, title })
   );
   return { answer, terminal, readyState: ready ? 'ready' : 'ready-unconfirmed', detail };
 }
@@ -1951,8 +2053,8 @@ function commandFailure(entry, command, launched) {
 }
 
 /**
- * @typedef {{ submit: 'confirmed' | 'unconfirmed', enters: number, detail: string[] }} Submitted The outcome of
- *   one submit loop: whether it saw the turn start, and its count of Enter presses.
+ * @typedef {{ submit: 'confirmed' | 'unconfirmed', enters: number, detail: string[], terminal: string | null }} Submitted The outcome of
+ *   one submit loop: whether it saw the turn start, its count of Enter presses, and the terminal that it used or read.
  */
 
 /**
@@ -1994,10 +2096,10 @@ function submitPrompt(run, { agent, dispatchId, terminal }) {
   let handle = terminal;
   let enters = 0;
   /** @param {string[]} detail @returns {Submitted} */
-  const unconfirmed = (detail) => ({ submit: 'unconfirmed', enters, detail: detail.slice(0, MAX_OUTPUT_LINES) });
+  const unconfirmed = (detail) => ({ submit: 'unconfirmed', enters, detail: detail.slice(0, MAX_OUTPUT_LINES), terminal: handle });
   for (;;) {
     const seen = turnStartOf(orcaCall(run, orcaCalls.workerShow(dispatchId)));
-    if (seen.turn === 'started') return { submit: 'confirmed', enters, detail: [] };
+    if (seen.turn === 'started') return { submit: 'confirmed', enters, detail: [], terminal: handle ?? seen.terminal };
     if (seen.turn === 'unread') return unconfirmed(seen.detail);
     if (seen.turn === 'person') return unconfirmed([...seen.detail, `The tab waits on a person, so the step stopped after ${entersText(enters)}.`]);
     if (seen.turn === 'stopped') return unconfirmed([...seen.detail, `The worker or its tab stopped, so the step stopped after ${entersText(enters)}.`]);
@@ -2020,18 +2122,50 @@ function submitPrompt(run, { agent, dispatchId, terminal }) {
  *
  * @param {Record<string, any>} result A success() result.
  * @param {Submitted | null} submitted
+ * @param {{ tabTitled: boolean } | null} [titled] From renameTab(): the rename of the tab (fix 6). It adds `tabTitled`.
  * @returns {Record<string, any>}
  */
-function withSubmit(result, submitted) {
-  if (!submitted) return result;
-  const detail = [...(Array.isArray(result.detail) ? result.detail : []), ...submitted.detail];
+function withSubmit(result, submitted, titled = null) {
+  const base = withTitle(result, titled);
+  if (!submitted) return base;
+  const detail = [...(Array.isArray(base.detail) ? base.detail : []), ...submitted.detail];
   return {
-    ...result,
-    say: submitted.submit === 'unconfirmed' ? `${result.say} ${SUBMIT_UNCONFIRMED_SAY}` : result.say,
+    ...base,
+    say: submitted.submit === 'unconfirmed' ? `${base.say} ${SUBMIT_UNCONFIRMED_SAY}` : base.say,
     submit: submitted.submit,
     enters: submitted.enters,
     ...(detail.length > 0 ? { detail: detail.slice(0, MAX_OUTPUT_LINES) } : {}),
   };
+}
+
+/**
+ * Give the tab of a good start its Task title (fix 6). Orca opens the worker
+ * tab of the agent path as `worker-<taskId>`, and that title protects the
+ * tab from the Task title, so the step renames it after the start. The rename
+ * runs after the submit loop, so it never delays the prompt of a dsh tab. A
+ * failed rename never fails the start. With no terminal handle, the step
+ * runs no rename.
+ *
+ * @param {StepRun} run
+ * @param {string | null | undefined} terminal The terminal of the command path, of the receipt, or of the submit loop.
+ * @param {string} title The same title as `--task-title`.
+ * @returns {{ tabTitled: boolean } | null} Null when no terminal handle exists, so no rename ran.
+ */
+function renameTab(run, terminal, title) {
+  if (!terminal) return null;
+  const renamed = orcaCall(run, orcaCalls.terminalRename({ terminal, title }));
+  return { tabTitled: renamed.kind === 'ok' };
+}
+
+/**
+ * Add `tabTitled` to the result of a good start. With no rename, the result stays as it is.
+ *
+ * @param {Record<string, any>} result
+ * @param {{ tabTitled: boolean } | null} titled From renameTab().
+ * @returns {Record<string, any>}
+ */
+function withTitle(result, titled) {
+  return titled ? { ...result, tabTitled: titled.tabTitled } : result;
 }
 
 /**
@@ -2131,7 +2265,8 @@ function startNewLaneByCommand(run, { checked, record, failed, retry, stage, pla
   // The start entry goes in before the tab start, so a lost answer never reads as no tab (CR-2).
   const where = { stage, phase: phaseNumber, agent, at: startedAt, path: 'command', command };
   writeRecord(tree.path, feature, { ...base, active: null, failedStart: pendingStart(where, retry ? failed : null), largeChange: null });
-  const launched = commandStart(laneRun(run, tree.path), { command, selector: laneSelector(tree.path), specFile, retry: retry ? failed : null });
+  const title = taskTitleOf({ feature, stage, phase: phaseNumber, round: plan.verifyInfo?.round ?? null, command: plan.stepInfo?.command ?? null });
+  const launched = commandStart(laneRun(run, tree.path), { command, selector: laneSelector(tree.path), specFile, retry: retry ? failed : null, title });
   const result = isPlainObject(launched.answer.result) ? launched.answer.result : {};
   if (launched.answer.kind !== 'ok' || typeof result.dispatchId !== 'string' || result.dispatchId.length === 0) {
     const entry = commandFailure(failedStartOf(launched.answer, retry ? failed : null), command, launched);
@@ -2173,6 +2308,7 @@ function startNewLaneByCommand(run, { checked, record, failed, retry, stage, pla
   const say = `${retry ? 'Retried' : 'Started'} ${label} of ${feature} on ${agent}${launch.how} in the new worktree ${tree.path}, on ${adopted.branch}.${launch.note}`;
   // The record holds the dispatch, so the submit loop of a dsh tab runs now (fix 1).
   const submitted = submitPrompt(run, { agent, dispatchId: active.dispatchId, terminal: launched.terminal });
+  const titled = renameTab(run, launched.terminal ?? submitted?.terminal, title);
   return withSubmit(
     success(step, adopted.notes.length > 0 ? `${say} A note follows in detail.` : say, {
       feature,
@@ -2193,7 +2329,8 @@ function startNewLaneByCommand(run, { checked, record, failed, retry, stage, pla
       ...(retry ? { retryOf: failed?.dispatchId ?? null } : {}),
       ...(notes.length > 0 ? { detail: notes } : {}),
     }),
-    submitted
+    submitted,
+    titled
   );
 }
 
@@ -2315,13 +2452,14 @@ function startNewLane(run, checked, facts) {
   const placement = { worktree: 'new-child', name: checked.segments[1], baseBranch: into };
   /** @type {string} */
   let specFile = path.join(run.projectRoot, ...specRel.split('/'));
+  const title = taskTitleOf({ feature, stage, phase: phaseNumber, round: plan.verifyInfo?.round ?? null, command: plan.stepInfo?.command ?? null });
   let answer;
   if (retry) {
     const previous = /** @type {Record<string, any>} */ (failed);
     answer = orcaCall(run, orcaCalls.workerRetry({ taskId: previous.taskId, retryOf: previous.dispatchId, agent, placement }));
   } else {
     specFile = writeSpec(run.projectRoot, specRel, plan.spec);
-    answer = orcaCall(run, orcaCalls.workerStart({ specFile, agent, placement }));
+    answer = orcaCall(run, orcaCalls.workerStart({ specFile, agent, placement, title }));
   }
 
   const startedAt = run.now().toISOString();
@@ -2408,6 +2546,7 @@ function startNewLane(run, checked, facts) {
   const say = `${retry ? 'Retried' : 'Started'} ${label} of ${feature} on ${agent} in the new worktree ${tree.path}, on ${adopted.branch}.`;
   // The record holds the dispatch, so the submit loop of a dsh tab runs now (fix 1).
   const submitted = submitPrompt(run, { agent, dispatchId, terminal: receiptTerminal(result) });
+  const titled = renameTab(run, receiptTerminal(result) ?? submitted?.terminal, title);
   return withSubmit(
     success(step, notes.length > 0 ? `${say} A note follows in detail.` : say, {
       feature,
@@ -2427,7 +2566,8 @@ function startNewLane(run, checked, facts) {
       ...(retry ? { retryOf: failed?.dispatchId ?? null } : {}),
       ...(notes.length > 0 ? { detail: notes } : {}),
     }),
-    submitted
+    submitted,
+    titled
   );
 }
 
@@ -2525,6 +2665,19 @@ function stepClose(run) {
     }
     return { dispatchId: id, ok: false, code: answer.code, detail: answer.detail };
   });
+  // A follow-up that a user note started still works when Orca refuses its release as not settled. A close
+  // line of an ask made before the note would drop it while it works, so the record keeps it (--discard drops it).
+  const noteFollowUp = isPlainObject(record.active?.noteFollowUp) ? record.active.noteFollowUp : null;
+  const working = !discard && noteFollowUp && noteFollowUp.dispatchId === record.active.dispatchId
+    ? release.find((entry) => entry.dispatchId === record.active.dispatchId && !entry.ok && entry.code === 'dispatch_inactive')
+    : undefined;
+  if (working) {
+    return refusal(step, 'follow-up-working', `The follow-up ${working.dispatchId} that a user note started for ${tabLabel(feature, record.active)} still works.`, [
+      `Orca started it for the note to ${String(noteFollowUp?.of)}, and it has not reported yet. Orca wakes this tab when it reports; then call next.`,
+      'Close it with "--discard" to drop it anyway.',
+      ...working.detail,
+    ], { feature, dispatchId: working.dispatchId });
+  }
   const ownClose = closeOwnTerminal(run, record.active, release);
   const own = terminalCloseOf(ownClose);
 
@@ -2554,7 +2707,7 @@ function stepClose(run) {
   });
 
   const tab = record.active
-    ? record.active.stage === 'phase' && record.active.phase
+    ? record.active.stage === 'phase' && isPhaseNumber(record.active.phase)
       ? `the Phase ${record.active.phase} tab`
       : `the ${record.active.stage} tab`
     : 'the failed start';
@@ -2792,8 +2945,9 @@ function stepReply(run) {
  * @returns {string} The name of the tab of an active entry, for example "the Phase 2 tab of demo".
  */
 function tabLabel(feature, active) {
-  if (active.stage === 'phase' && active.phase) return `the Phase ${active.phase} tab of ${feature}`;
-  if ((active.stage === 'verify' || active.stage === 'fix') && active.phase) return `the ${active.stage} tab of Phase ${active.phase} of ${feature}`;
+  const numbered = isPhaseNumber(active.phase);
+  if (active.stage === 'phase' && numbered) return `the Phase ${active.phase} tab of ${feature}`;
+  if ((active.stage === 'verify' || active.stage === 'fix') && numbered) return `the ${active.stage} tab of Phase ${active.phase} of ${feature}`;
   if (active.stage === 'step' && typeof active.stepCommand === 'string') return `the step tab "${active.stepCommand}" of ${feature}`;
   return `the ${active.stage} tab of ${feature}`;
 }
@@ -2804,9 +2958,10 @@ function tabLabel(feature, active) {
  * @returns {string} The work of a tab in a send text, for example "Phase 2 of demo".
  */
 function workLabel(feature, active) {
-  if (active.stage === 'phase' && active.phase) return `Phase ${active.phase} of ${feature}`;
-  if (active.stage === 'verify' && active.phase) return `the verification of Phase ${active.phase} of ${feature}`;
-  if (active.stage === 'fix' && active.phase) return `the fix of Phase ${active.phase} of ${feature}`;
+  const numbered = isPhaseNumber(active.phase);
+  if (active.stage === 'phase' && numbered) return `Phase ${active.phase} of ${feature}`;
+  if (active.stage === 'verify' && numbered) return `the verification of Phase ${active.phase} of ${feature}`;
+  if (active.stage === 'fix' && numbered) return `the fix of Phase ${active.phase} of ${feature}`;
   if (active.stage === 'step' && typeof active.stepCommand === 'string') return `the step "${active.stepCommand}" of ${feature}`;
   return `the ${active.stage} stage of ${feature}`;
 }
@@ -2818,7 +2973,7 @@ function workLabel(feature, active) {
  */
 function specOf(feature, active) {
   if (typeof active.spec === 'string' && active.spec) return active.spec;
-  const name = active.stage === 'phase' && active.phase ? `orca-phase-${active.phase}.md` : `orca-${active.stage}.md`;
+  const name = active.stage === 'phase' && isPhaseNumber(active.phase) ? `orca-phase-${active.phase}.md` : `orca-${active.stage}.md`;
   return `.beast-mode/briefs/${feature}/${name}`;
 }
 
@@ -2898,11 +3053,15 @@ function stepSend(run) {
     ], { feature, reason });
   }
 
+  // Fix 7: with `--mail`, the text names the undelivered mail of the tab, read again here.
+  const mail = run.values.mail === true && (reason === 'escalation' || reason === 'report') ? readPendingMail(run, active).messages : [];
   const text = sendText({
     label: workLabel(feature, active),
     reason,
     open: reason === 'report' ? [] : open,
     spec: specOf(feature, active),
+    mail: mail.length,
+    dispatchId: active.dispatchId,
   });
   const answer = orcaCall(run, orcaCalls.send({ dispatchId: active.dispatchId, subject: text.subject, body: text.body }));
   if (answer.kind !== 'ok') {
@@ -2922,7 +3081,10 @@ function stepSend(run) {
   // A resume or a report send after progress starts its count again (fix 2).
   const counted = sendCounts(active, reason, open.length);
   const { failedSend: _failedSend, ...kept } = active;
-  writeRecord(run.projectRoot, feature, { ...record, active: { ...kept, ...counted, ...(followUp ?? {}) } });
+  const named = mail.length > 0 ? { mailNamed: [...(Array.isArray(active.mailNamed) ? active.mailNamed : []), ...mail.map((message) => message.id)] } : {};
+  // Fix 7: a lost escalation from before this send is answered, so a later timer wake does not take it again.
+  if (reason === 'escalation' || reason === 'report') named.escalationAt = run.now().toISOString();
+  writeRecord(run.projectRoot, feature, { ...record, active: { ...kept, ...counted, ...named, ...(followUp ?? {}) } });
   const tail = followUp ? ` Orca started the follow-up dispatch ${followUp.dispatchId}.` : '';
   return success(step, `Sent ${SEND_SAY[reason]} to ${tab}.${tail}`, {
     feature,
@@ -2932,6 +3094,7 @@ function stepSend(run) {
     followUp: followUp !== null,
     subject: text.subject,
     open: reason === 'report' ? [] : open,
+    mail: mail.map((message) => message.id),
   });
 }
 
@@ -2987,14 +3150,26 @@ function appendInbox(run, feature, line) {
 }
 
 /**
+ * The worker states of `worker-show` (normalizeWorker) whose tab has ended
+ * its work: it reported (`done`), or it can take no more (`failed`,
+ * `circuit`, `gone`). A note for such a tab goes to inbox.md, never to the
+ * tab: a send to a settled worker makes Orca start a follow-up dispatch,
+ * and the ask or close that waits on the old tab then closes the
+ * follow-up while it works, so the line is worked twice or lost.
+ */
+const NOTE_SETTLED = new Set(['done', 'failed', 'circuit', 'gone']);
+
+/**
  * `note`: pass a user message to the run (Decision 14). When the record
- * names a tab of the feature, the message goes to it with `orchestration
- * send --to dispatch:<id> --subject "User message (<kind>)"`, and the body
- * holds the text and the inbox instruction as one argument. A follow-up
- * dispatch id in the receipt replaces the active id (fact O9). When no tab
- * runs, or Orca does not deliver the send, the message becomes one line at
- * the end of `## Items` of inbox.md, in the shape of section 12 rule 2, so
- * no message is lost.
+ * names a tab of the feature and that tab still works, the message goes to
+ * it with `orchestration send --to dispatch:<id> --subject "User message
+ * (<kind>)"`, and the body holds the text and the inbox instruction as one
+ * argument. A follow-up dispatch id in the receipt replaces the active id
+ * (fact O9), and the record marks it `noteFollowUp`, so a close does not
+ * drop it while it works. A tab whose worker `worker-show` reads settled
+ * (NOTE_SETTLED) gets no send. When no tab works, or Orca does not deliver
+ * the send, the message becomes one line at the end of `## Items` of
+ * inbox.md, in the shape of section 12 rule 2, so no message is lost.
  *
  * @param {StepRun} run
  * @returns {Record<string, any>}
@@ -3028,13 +3203,18 @@ function stepNote(run) {
   /** @type {string[]} */
   const detail = [];
   const active = record?.active;
-  if (record && active) {
+  const worker = record && active ? normalizeWorker(orcaCall(run, orcaCalls.workerShow(active.dispatchId))) : null;
+  const settled = Boolean(record && active && worker && NOTE_SETTLED.has(worker.state));
+  if (settled && active && worker) {
+    const tab = tabLabel(feature, active);
+    detail.push(`${tab.charAt(0).toUpperCase()}${tab.slice(1)} has ended its work, so the message went into the inbox.`, ...worker.detail);
+  } else if (record && active) {
     const tab = tabLabel(feature, active);
     const message = noteText({ feature, kind, text: read.text });
     const answer = orcaCall(run, orcaCalls.send({ dispatchId: active.dispatchId, subject: message.subject, body: message.body }));
     if (answer.kind === 'ok') {
       const followUp = followUpOf(active, answer.result);
-      if (followUp) writeRecord(run.projectRoot, feature, { ...record, active: { ...active, ...followUp } });
+      if (followUp) writeRecord(run.projectRoot, feature, { ...record, active: { ...active, ...followUp, noteFollowUp: { dispatchId: followUp.dispatchId, of: active.dispatchId } } });
       return success(step, `Sent the ${kind} to ${tab}.${followUp ? ` Orca started the follow-up dispatch ${followUp.dispatchId}.` : ''}`, {
         feature,
         kind,
@@ -3056,10 +3236,12 @@ function stepNote(run) {
     });
   }
   const inbox = `docs/features/${feature}/inbox.md`;
-  return success(step, `Added the ${kind} line to ${inbox}${written.created ? ', a new file' : ''}.${detail.length > 0 ? ' Orca did not deliver it to the tab.' : ''}`, {
+  const why = settled ? ' The tab has ended its work, so it got no send.' : detail.length > 0 ? ' Orca did not deliver it to the tab.' : '';
+  return success(step, `Added the ${kind} line to ${inbox}${written.created ? ', a new file' : ''}.${why}`, {
     feature,
     kind,
     delivery: 'inbox',
+    ...(settled ? { settled: true } : {}),
     line,
     created: written.created,
     ...(detail.length > 0 ? { detail } : {}),
@@ -3390,6 +3572,7 @@ function gatherEpicFacts(run) {
       fresh: values.fresh === true,
       wake: typeof values.wake === 'string' && values.wake ? values.wake : null,
       dispatch: typeof values.dispatch === 'string' && values.dispatch ? values.dispatch : null,
+      stopReason: typeof values['stop-reason'] === 'string' && values['stop-reason'] ? values['stop-reason'] : null,
       stop: values.stop === true,
       acceptDirty: values['accept-dirty'] === true,
     },
@@ -3420,7 +3603,9 @@ function stepNextEpic(run) {
     if (facts.flags.fresh) facts.orcaStatus = readOrcaStatus(run);
     // Every lane of the current group, so a side-by-side group sees each of its tabs.
     const { lanes } = epicPlan(facts);
-    for (const active of [...lanes.map((entry) => entry.record.record?.active), facts.record.record?.active]) {
+    const actives = [...lanes.map((entry) => entry.record.record?.active), facts.record.record?.active].filter(Boolean);
+    facts.flags.mailWakes = readLostWakes(run, facts.flags, actives);
+    for (const active of actives) {
       if (active && !facts.workers[active.dispatchId]) {
         facts.workers[active.dispatchId] = readWorker(run, facts.flags, facts.config, active, run.projectRoot);
       }
@@ -3700,19 +3885,20 @@ function stepStartEpic(run) {
   const base = record ?? newEpicRecord(epic);
   const where = { stage, phase: null, ...(stepInfo ? { step: stepInfo.index } : {}), agent, at: startedAt };
   const specFile = retry ? null : writeSpec(run.projectRoot, specRel, spec);
+  const title = taskTitleOf({ feature: epic, stage: stepInfo ? 'step' : 'epic-docs', command: stepInfo?.command ?? null });
   // The start entry goes in before the first Orca call, so a lost answer never reads as no tab (CR-2).
   writeEpicRecord(run.projectRoot, epic, { ...base, active: null, failedStart: pendingStart(where, retry ? failed : null) });
   /** @type {CommandLaunch | null} */
   let launched = null;
   let answer;
   if (command) {
-    launched = commandStart(run, { command, selector: CURRENT_WORKTREE, specFile, retry: retry ? failed : null });
+    launched = commandStart(run, { command, selector: CURRENT_WORKTREE, specFile, retry: retry ? failed : null, title });
     answer = launched.answer;
   } else if (retry) {
     const previous = /** @type {Record<string, any>} */ (failed);
     answer = orcaCall(run, orcaCalls.workerRetry({ taskId: previous.taskId, retryOf: previous.dispatchId, agent }));
   } else {
-    answer = orcaCall(run, orcaCalls.workerStart({ specFile: /** @type {string} */ (specFile), agent }));
+    answer = orcaCall(run, orcaCalls.workerStart({ specFile: /** @type {string} */ (specFile), agent, title }));
   }
 
   const result = isPlainObject(answer.result) ? answer.result : {};
@@ -3749,6 +3935,7 @@ function stepStartEpic(run) {
     }
     // The record holds the dispatch, so the submit loop of a dsh tab runs now (fix 1).
     const submitted = submitPrompt(run, { agent, dispatchId: active.dispatchId, terminal: launched?.terminal ?? receiptTerminal(result) });
+    const titled = renameTab(run, launched?.terminal ?? receiptTerminal(result) ?? submitted?.terminal, title);
     return withSubmit(
       success(step, `${retry ? 'Retried' : 'Started'} ${label} of ${epic} on ${agent}${launch.how}.${launch.note}`, {
         epic,
@@ -3765,7 +3952,8 @@ function stepStartEpic(run) {
         retry,
         ...(retry ? { retryOf: failed?.dispatchId ?? null } : {}),
       }),
-      submitted
+      submitted,
+      titled
     );
   }
 
@@ -3828,14 +4016,17 @@ function releaseDispatches(run, ids) {
  * @param {Record<string, any> | null | undefined} active The record entry of the tab: it must hold `ownTerminal`.
  * @param {Record<string, any>[]} release The answers of releaseDispatches().
  * @returns {{ terminal: string, closed: boolean, detail: string[] } | null} Null when the record owns no terminal
- *   or the release left the tab to nobody.
+ *   or Orca closed the tab with the release. A failed release gives `closed: false` and closes nothing.
  */
 function closeOwnTerminal(run, active, release) {
   if (!isPlainObject(active) || active.ownTerminal !== true) return null;
   const terminal = textOf(active.terminal);
   if (!terminal) return null;
   const released = release.find((entry) => entry.dispatchId === active.dispatchId);
-  if (!released || !released.ok || (released.state !== 'retained' && released.state !== 'already_released')) return null;
+  if (!released) return null;
+  // A failed release leaves the worker live, so the step closes no terminal and says the tab stays open (fix 5).
+  if (!released.ok) return { terminal, closed: false, detail: released.detail };
+  if (released.state !== 'retained' && released.state !== 'already_released') return null;
   const answer = orcaCall(run, orcaCalls.terminalClose(terminal));
   return answer.kind === 'ok' ? { terminal, closed: true, detail: [] } : { terminal, closed: false, detail: answer.detail };
 }

@@ -14,7 +14,7 @@ import test from 'node:test';
 import { adapters } from '../adapters/index.js';
 import { UsageError } from '../lib/errors.js';
 import { findPluginRoot } from '../lib/source.js';
-import { ORCA_JSON_MAX_BYTES } from '../lib/orca/read.js';
+import { ORCA_JSON_MAX_BYTES, parseOrcaConfig } from '../lib/orca/read.js';
 import { detect, findOnPath, suggestStages, writeOrchestration } from '../lib/orca/setup.js';
 import { runOrca } from '../lib/orca/steps.js';
 import { createTempProjectRoot, removeFixture, snapshotTree } from './helpers.js';
@@ -402,6 +402,19 @@ test('detect: an invalid file lists its problems, and a valid object shows the r
     assert.equal(facts.config.hasOrchestration, true);
     assert.deepEqual(facts.config.orchestration, { stages: { implement: 'claude' } });
     assert.deepEqual(facts.config.resolved.stages, { plan: 'claude', implement: 'claude', verify: 'claude', review: 'claude', docs: 'claude' });
+    assert.deepEqual([facts.config.resolved.backstopSeconds, facts.config.resolved.statusEveryMinutes], [600, 30]);
+  });
+});
+
+test('writer: backstopSeconds and statusEveryMinutes are written as given, and read back resolved (fix 7)', () => {
+  const root = makeProject();
+  withCleanup([root], () => {
+    const answer = writeOrchestration(root, { commit: 'phase', backstopSeconds: 900, statusEveryMinutes: 60, steps: [] });
+    assert.equal(answer.ok, true);
+    const after = JSON.parse(fs.readFileSync(orcaJson(root), 'utf8'));
+    assert.deepEqual([after.orchestration.backstopSeconds, after.orchestration.statusEveryMinutes], [900, 60]);
+    const read = parseOrcaConfig(fs.readFileSync(orcaJson(root), 'utf8'));
+    assert.deepEqual([read.orchestration.backstopSeconds, read.orchestration.statusEveryMinutes], [900, 60]);
   });
 });
 
@@ -418,7 +431,12 @@ test('step detect: one JSON object, one Orca call, no git call, and no file writ
     const { code, json } = step(root, ['detect'], { runner: fake.runner, env: testEnv(bin) });
     assert.equal(code, 0);
     assert.deepEqual([json.step, json.ok, json.offer], ['detect', true, 'setup']);
-    assert.deepEqual(Object.keys(json).sort(), ['config', 'editedAutoruns', 'harnesses', 'offer', 'ok', 'orca', 'projectSkills', 'say', 'schema', 'step', 'suggested', 'usable']);
+    assert.deepEqual(Object.keys(json).sort(), ['config', 'editedAutoruns', 'harnesses', 'numberSettings', 'offer', 'ok', 'orca', 'projectSkills', 'say', 'schema', 'step', 'suggested', 'usable']);
+    // Fix 7: the backstop timer and the status cadence, with their defaults and bounds.
+    assert.deepEqual(json.numberSettings, {
+      backstopSeconds: { default: 600, min: 60, max: 86400, unit: 'seconds' },
+      statusEveryMinutes: { default: 30, min: 1, max: 1440, unit: 'minutes' },
+    });
     assert.deepEqual(fake.calls, [{ command: FAKE_ORCA, args: ['status', '--json'] }]);
     assert.deepEqual(snapshotTree(root), before);
   });
@@ -612,7 +630,7 @@ test('writer: a value that fails the schema is refused, and nothing is written',
   const existing = makeProject({ config: { version: 1, keep: true } });
   withCleanup([fresh, existing], () => {
     const before = fs.readFileSync(orcaJson(existing), 'utf8');
-    for (const bad of [{ comit: 'phase' }, { stages: { plan: 'gemini' } }, { stages: { review: 'maybe' } }, { commit: 'week' }, { concurrent: 'yes' }]) {
+    for (const bad of [{ comit: 'phase' }, { stages: { plan: 'gemini' } }, { stages: { review: 'maybe' } }, { commit: 'week' }, { concurrent: 'yes' }, { backstopSeconds: 30 }, { statusEveryMinutes: 0 }]) {
       let answer = writeOrchestration(fresh, bad);
       assert.deepEqual([answer.ok, answer.code], [false, 'config-invalid'], JSON.stringify(bad));
       assert.ok(answer.problems.length > 0);

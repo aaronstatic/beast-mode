@@ -73,6 +73,7 @@ Usable agents: <usable, with commas>
 Commands: <each harness id with its command, such as claude=claude, dsh=dsh-personal>
 Plan / Build / Verify / Review / Docs: <the five values>
 Commit: <phase | feature>    Concurrent: <true | false>
+Backstop timer: <n> s    Status line at most every: <n> min
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
@@ -80,11 +81,13 @@ Take each command from `harnesses[].command`. It is the first word of `agents.<i
 
 Take the five values from `config.resolved.stages`, the commit value from `config.resolved.commit`, and the concurrent value from `config.resolved.concurrent`, when `config.hasOrchestration` is true. Else take the stages from `suggested.stages` and say where they come from: `suggested.source` is `launch-table` (the nine-button table of the launch settings) or `defaults`. Name the commit value as `phase` and the concurrent value as `true`, the defaults.
 
+Take the backstop timer from `config.resolved.backstopSeconds` and the status cadence from `config.resolved.statusEveryMinutes`, when `config.hasOrchestration` is true. Else name the defaults of `numberSettings`: `backstopSeconds.default` (600) and `statusEveryMinutes.default` (30).
+
 ---
 
 ## The questions
 
-Use two calls of "ask the user to choose" for the agents, then the steps round below. Put the **current** value first in each option list, and mark it as the recommended option. With no current value, put the **suggested** value first. Offer only ids from `usable`. When `usable` holds one id, still ask, with that one id.
+Use two calls of "ask the user to choose" for the agents, one for the backstop timer, then the steps round below. Put the **current** value first in each option list, and mark it as the recommended option. With no current value, put the **suggested** value first. Offer only ids from `usable`. When `usable` holds one id, still ask, with that one id.
 
 ### Call 1: the four agents
 
@@ -105,11 +108,22 @@ For Review, the same id as Build means the review runs in the last phase tab. `o
 | Commit | `phase`, `feature` | `phase` commits after each phase. `feature` commits one time at the end. Recommend the current value, else `phase`. |
 | Concurrent | `true`, `false` | `true` lets the lanes of an epic run side by side. `false` runs one lane at a time. Recommend the current value, else `true`. |
 
+### Call 3: the backstop timer
+
+The coordinator of `/orca-feature` and `/orca-epic` starts a backstop timer while a tab works, because a wake can fail to come: Orca reports no later idle turn of a dsh tab, and it can fail to deliver wakes to the coordinator itself. Each timer runs one quiet check. Ask two questions in one call:
+
+| Question | Options | Meaning |
+|---|---|---|
+| Backstop timer | the current value, else `600`, then `300` and `1200` (seconds) | How long the coordinator waits before it checks a dsh tab that sent no wake. `backstopSeconds`, a whole number from `numberSettings.backstopSeconds.min` (60) to `max` (86400). |
+| Status line | the current value, else `30`, then `15` and `60` (minutes) | The most often a quiet check posts one "still working" line. `statusEveryMinutes`, a whole number from `numberSettings.statusEveryMinutes.min` (1) to `max` (1440). |
+
+Mark the current value, else the default, as the recommended option, and name the default in its label, such as `600 (default)`. The user may type another whole number. Check it against the bounds above before you use it.
+
 ---
 
 ## The steps round
 
-A **step** is one command that a worker tab runs at a point of the run, and that writes a verdict. This round suggests step lines. Run it after call 2.
+A **step** is one command that a worker tab runs at a point of the run, and that writes a verdict. This round suggests step lines. Run it after call 3.
 
 ### Name the candidates
 
@@ -155,13 +169,15 @@ The writer replaces the whole `orchestration` object, so a patch with no `steps`
   },
   "commit": "phase",
   "concurrent": true,
+  "backstopSeconds": 600,
+  "statusEveryMinutes": 30,
   "steps": [
     { "after": "feature", "command": "/review-ux {feature}", "agent": "claude" }
   ]
 }
 ```
 
-   Write the answers as given. Write `"review": false` for the answer `off`. Write `concurrent` as a JSON boolean, not as a string. Write `steps` as the array of the chosen lines, each with exactly `after`, `command`, and `agent`. Write `"steps": []` when the user chose no line.
+   Write the answers as given. Write `"review": false` for the answer `off`. Write `concurrent` as a JSON boolean, not as a string. Write `backstopSeconds` and `statusEveryMinutes` as JSON whole numbers, not as strings. Write `steps` as the array of the chosen lines, each with exactly `after`, `command`, and `agent`. Write `"steps": []` when the user chose no line.
 
 2. **Run the writer.** Run a shell command: `beast-mode orca config --write .beast-mode/briefs/orca-setup/orchestration.json`. Use the same form of the CLI as in step 1.
 3. **Read the result.** When the command exits with a code that is not 0, end the run, and show the output as it is. Else read the one JSON object that it prints.
