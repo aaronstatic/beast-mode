@@ -87,7 +87,7 @@ The script runs the stages of one feature in this order. You do not choose a sta
 5. **`docs`**: a docs tab. It runs `/update-feature`, `/update-epic`, and `/update-master`.
 6. **`done`**: the summary block.
 
-A `step` action runs one configured command in its own tab, with a verdict file. Treat it as any other `start` action. A `FAIL` or `BLOCKED` verdict gives an `ask` with the reason `step-failed`: stop (recommended), or go on (the step is recorded `overridden`). A step with `after: "epic"` runs only in `/orca-epic`.
+A `step` action runs one configured command in its own tab, with a verdict file. Treat it as any other `start` action. A `FAIL` or `BLOCKED` verdict gives an `ask` with the reason `step-failed`: stop (recommended), or go on (the step is recorded `overridden`). A step with `after: "epic"` runs only in `/orca-epic`. A feature step runs again after new work, such as an inbox tab that fixes its findings, so the run counts its `FAIL` rounds. At round `orchestration.stepRoundCap` (3 by default) the ask is `step-fail-cap` instead: accept the result (recommended: the step is recorded `overridden-final` and does not run again in this run), one more round (recorded `overridden`), or stop.
 
 ---
 
@@ -153,7 +153,7 @@ Ask every question of this command in one plain chat message, then end your turn
 
 The user answers with the number. Never make a call to ask the user to choose while a tab runs. That call holds your turn open, and it can block a wake. Use the plain message for every question of this command, so no question blocks a wake.
 
-For an `ask` action, the question is `question`, and the options are the `label` of each entry in `options`. The entry whose `key` equals `recommended` goes first. The `reason` of the ask is one of `dirty-start`, `start-failed`, `escalation-cap`, `worker-gone`, `send-back-cap`, `verify-fail-cap`, `verify-blocked`, `verify-missing`, or `start-unknown`. Ask each one the same way. Then act on the answer:
+For an `ask` action, the question is `question`, and the options are the `label` of each entry in `options`. The entry whose `key` equals `recommended` goes first. The `reason` of the ask is one of `dirty-start`, `start-failed`, `escalation-cap`, `worker-gone`, `send-back-cap`, `verify-fail-cap`, `verify-blocked`, `verify-missing`, `step-failed`, `step-fail-cap`, or `start-unknown`. Ask each one the same way. Then act on the answer:
 
 - An option with a `run` line: run that line by step 4 of the loop, then call `next` by step 5.
 - An option with a null `run`: end the run. `next` asks the same question again until the cause changes.

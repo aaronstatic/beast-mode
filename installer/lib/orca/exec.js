@@ -12,6 +12,8 @@
 // one injectable function, so no test starts a real Orca CLI.
 
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 
 /** The output cap of one child process: 1 MiB. */
 export const MAX_BUFFER = 1024 * 1024;
@@ -196,20 +198,177 @@ export function windowsPathForWsl(p, distro) {
   return `\\\\wsl.localhost\\${distro}${p.split('/').join('\\')}`;
 }
 
+/** The most bytes of a launcher that the host probe reads. */
+const LAUNCHER_PROBE_BYTES = 8192;
+
+/** @typedef {'windows' | 'linux' | 'unknown'} OrcaHost Where the Orca CLI that the executable names runs. */
+
+/**
+ * @param {string} p
+ * @returns {boolean} True for a path on a Windows drive mount: /mnt/c/...
+ */
+function onDriveMount(p) {
+  return /^\/mnt\/[a-zA-Z](?:\/|$)/.test(p);
+}
+
+/**
+ * @param {string} p
+ * @returns {boolean} True for an absolute Linux path: not a drive mount, not an .exe.
+ */
+function isLinuxPath(p) {
+  return p.startsWith('/') && !onDriveMount(p) && !/\.exe$/i.test(p);
+}
+
+/**
+ * Where the Orca CLI of a launcher runs (issue #10, fix 7). Pure: the caller
+ * reads the launcher. Two real shapes exist on WSL2:
+ *
+ * - The Linux launcher (`~/.orca/cli/bin/orca`, or `orca-ide`) is a `sh`
+ *   script. It exports `ORCA_USER_DATA_PATH='/home/u/.orca'`, then runs
+ *   `exec '/home/u/.orca/.../bin/node' '/home/u/.orca/.../out/cli/index.js' "$@"`.
+ *   It reads a Linux path as it is, so the answer is `linux`. A binary
+ *   (the ELF magic) is the same.
+ * - The Windows launcher (`%APPDATA%/orca/wsl-managed-cli/<id>/orca-ide`) is a
+ *   script that forwards to `orca.exe` and translates only the working
+ *   directory (`wslpath -w`), so it needs a Windows path. The answer is
+ *   `windows`. A launcher path on a drive mount (/mnt/c/...), an .exe, or a
+ *   path with `wsl-managed-cli` is the same.
+ *
+ * Any other text gives `unknown`. A Windows sign wins over a Linux text sign.
+ *
+ * @param {string} launcherText The first bytes of the launcher, as text (a binary reads as latin1).
+ * @param {string} [launcherPath] The path of the launcher, after symlinks.
+ * @returns {OrcaHost}
+ */
+export function orcaHostOf(launcherText, launcherPath = '') {
+  const text = typeof launcherText === 'string' ? launcherText : '';
+  if (text.startsWith('\x7fELF')) return 'linux';
+  if (onDriveMount(launcherPath) || /\.exe$/i.test(launcherPath) || launcherPath.includes('wsl-managed-cli')) return 'windows';
+  if (/\bwslpath\s+-w\b/.test(text) || /\.exe\b/i.test(text) || text.includes('wsl-managed-cli')) return 'windows';
+  for (const line of text.split(/\r?\n/)) {
+    const tokens = [...line.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+    const node = tokens.some((t) => isLinuxPath(t) && /(?:^|\/)node$/.test(t));
+    const script = tokens.some((t) => isLinuxPath(t) && /(?:\/out\/cli\/index\.js|\/orcad(?:\.js)?)$/.test(t));
+    if (node && script) return 'linux';
+  }
+  const data = /\bORCA_USER_DATA_PATH=(?:'([^']*)'|"([^"]*)"|(\S+))/.exec(text);
+  if (data && isLinuxPath(data[1] ?? data[2] ?? data[3])) return 'linux';
+  return 'unknown';
+}
+
+/**
+ * @typedef {Object} LauncherIo The file reads of the host probe. Each one defaults to node:fs.
+ * @property {(p: string) => { isFile(): boolean }} [statSync]
+ * @property {(p: string) => string} [realpathSync]
+ * @property {(p: string) => string} [readHead] The first bytes of a file, as latin1 text.
+ */
+
+/**
+ * The launcher file of an Orca executable. A name with a `/` is a path as it
+ * is. A bare name is the first match on `env.PATH` that is a file.
+ *
+ * @param {string} orca
+ * @param {Record<string, string | undefined>} env
+ * @param {LauncherIo} [io]
+ * @returns {string | null}
+ */
+export function findLauncher(orca, env, io = {}) {
+  const statSync = io.statSync ?? fs.statSync;
+  const isFile = (p) => {
+    try {
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  };
+  if (typeof orca !== 'string' || orca.length === 0) return null;
+  if (orca.includes('/')) return isFile(orca) ? orca : null;
+  for (const dir of String(env.PATH ?? '').split(':')) {
+    if (!dir) continue;
+    const candidate = path.join(dir, orca);
+    if (isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * @param {string} p
+ * @returns {string} The first 8 KiB of a file as latin1 text.
+ */
+function readHead(p) {
+  const fd = fs.openSync(p, 'r');
+  try {
+    const buffer = Buffer.alloc(LAUNCHER_PROBE_BYTES);
+    const n = fs.readSync(fd, buffer, 0, LAUNCHER_PROBE_BYTES, 0);
+    return buffer.toString('latin1', 0, n);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * Where the Orca CLI of one run executes, chosen once per step. `BEAST_MODE_ORCA_HOST`
+ * (`windows` or `linux`) wins. Else the launcher is found, followed through
+ * symlinks, read (8 KiB at most), and classified. Any error gives `unknown`.
+ * Only a WSL2 run needs the answer, so every other run answers `unknown` with no read.
+ *
+ * @param {string} orca The Orca executable of the run.
+ * @param {Record<string, string | undefined>} env
+ * @param {string} platform
+ * @param {LauncherIo} [io]
+ * @returns {OrcaHost}
+ */
+export function resolveOrcaHost(orca, env, platform, io = {}) {
+  const forced = typeof env.BEAST_MODE_ORCA_HOST === 'string' ? env.BEAST_MODE_ORCA_HOST.trim().toLowerCase() : '';
+  if (forced === 'windows' || forced === 'linux') return forced;
+  if (platform !== 'linux' || !env.WSL_DISTRO_NAME || env.ORCA_DEV_REPO_ROOT) return 'unknown';
+  try {
+    const found = findLauncher(orca, env, io);
+    if (!found) return 'unknown';
+    const real = (io.realpathSync ?? fs.realpathSync)(found);
+    return orcaHostOf((io.readHead ?? readHead)(real), real);
+  } catch {
+    return 'unknown';
+  }
+}
+
 /**
  * The arguments of one Orca call with each file-path value in Windows form,
  * when the run is on WSL (`WSL_DISTRO_NAME` set) and the call goes to the
- * Windows app (not `orca-dev`). Only `--spec-file` carries a file path today.
+ * Windows app (not `orca-dev`, not a Linux Orca CLI). Only `--spec-file`
+ * carries a file path today. A `linux` host keeps the Linux path. A
+ * `windows` host and an `unknown` one convert (the issue #10 default).
  *
  * @param {string[]} args
  * @param {Record<string, string | undefined>} env
  * @param {string} platform
+ * @param {OrcaHost} [host]
  * @returns {string[]}
  */
-export function orcaArgsForHost(args, env, platform) {
+export function orcaArgsForHost(args, env, platform, host = 'unknown') {
   const distro = env.WSL_DISTRO_NAME;
-  if (platform !== 'linux' || !distro || env.ORCA_DEV_REPO_ROOT) return args;
+  if (platform !== 'linux' || !distro || env.ORCA_DEV_REPO_ROOT || host === 'linux') return args;
   return args.map((arg, i) => (i > 0 && args[i - 1] === '--spec-file' ? windowsPathForWsl(arg, distro) : arg));
+}
+
+/**
+ * The one sentence for a start that failed because the spec path had the
+ * wrong form for the Orca CLI (fix 7). Pure. It never retries: worker-start
+ * changes state. Returns an empty string when the detail shows no such fault.
+ *
+ * @param {string[]} detail The detail lines of the failed start.
+ * @param {OrcaHost} host The detected host.
+ * @returns {string}
+ */
+export function wrongHostSentence(detail, host) {
+  const text = Array.isArray(detail) ? detail.join('\n') : '';
+  if (!/ENOENT/.test(text) && !/Could not read/.test(text)) return '';
+  const unc = text.includes('wsl.localhost') && /ENOENT|Could not read/.test(text);
+  const drive = /\b[A-Za-z]:[\\/]+(?:home|root|tmp|usr|opt|var|srv)\b/.test(text) && /ENOENT/.test(text);
+  if (!unc && !drive) return '';
+  const which = unc ? 'the Windows form' : 'the Linux form';
+  const other = unc ? 'linux' : 'windows';
+  return `Orca could not read the spec path in ${which}, so the Orca CLI runs on ${other} (detected host: ${host}). Set ORCA_CLI_COMMAND to the ${other} launcher, or set BEAST_MODE_ORCA_HOST=${other}, then run the start again.`;
 }
 
 /**
@@ -925,6 +1084,14 @@ export const orcaCalls = {
     ),
   /** @param {string} dispatchId @returns {Call} */
   workerRelease: (dispatchId) => orcaChange(['orchestration', 'worker-release', '--dispatch', dispatchId, '--json']),
+  /**
+   * Fix 10: fence one dispatch and stop its agent terminal and its helpers.
+   * Only `close --discard` calls it, for a tab whose release Orca refused:
+   * Orca releases only a settled worker.
+   *
+   * @param {string} dispatchId @returns {Call}
+   */
+  workerStop: (dispatchId) => orcaChange(['orchestration', 'worker-stop', '--dispatch', dispatchId, '--json']),
   /** @param {string} selector A worktree selector, from laneSelector(). @returns {Call} */
   worktreeRemove: (selector) => orcaChange(['worktree', 'rm', '--worktree', selector, '--json'], WRITE_TIMEOUT_MS),
   /** @param {{ dispatchId: string, subject: string, body: string }} opts @returns {Call} */

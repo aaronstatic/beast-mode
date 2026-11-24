@@ -1,6 +1,6 @@
 {
   "name": "beast-mode",
-  "version": "6.2.4",
+  "version": "6.2.5",
   "description": "Battle-tested Claude Code workflow system: skills, dev docs, agents, Discord bridge, web dashboard, and desktop MCP.",
   "author": {
     "name": "Aaron Static"

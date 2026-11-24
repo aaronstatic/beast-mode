@@ -75,6 +75,7 @@ import {
   writeRecord,
 } from './read.js';
 import {
+  FINAL_MARK,
   LANE_REFUSED,
   RECORD_UNREADABLE,
   START_FAILURE_CAP,
@@ -141,6 +142,8 @@ import {
   receiptTerminal,
   receiptWorktree,
   resolveOrcaExecutable,
+  resolveOrcaHost,
+  wrongHostSentence,
   sleepSync,
   terminalHandleOf,
   turnStartOf,
@@ -290,8 +293,21 @@ export function renderAction(action, cli) {
  * @returns {OrcaAnswer}
  */
 function orcaCall(run, spec) {
-  const args = orcaArgsForHost(spec.args, run.env, run.platform);
+  const args = orcaArgsForHost(spec.args, run.env, run.platform, run.orcaHost ?? 'unknown');
   return /** @type {OrcaAnswer} */ (call(run, args === spec.args ? spec : { ...spec, args }));
+}
+
+/**
+ * The say sentence of a start that failed on the form of the spec path
+ * (fix 7): empty, or a space and one sentence. It never retries the start.
+ *
+ * @param {StepRun} run
+ * @param {string[]} detail
+ * @returns {string}
+ */
+function hostHint(run, detail) {
+  const sentence = wrongHostSentence(detail, run.orcaHost ?? 'unknown');
+  return sentence ? ` ${sentence}` : '';
 }
 
 /**
@@ -381,6 +397,7 @@ function laneOf(run, checked) {
  * @property {(ms: number) => void} sleep The wait before the one retry of an Orca read.
  * @property {string} platform The platform of the PATH search of `detect`.
  * @property {string} orca The Orca executable, chosen once.
+ * @property {import('./exec.js').OrcaHost} [orcaHost] Where the Orca CLI runs (fix 7), probed once. Absent reads as `unknown`.
  * @property {{ node: string, bin: string, project: string }} cli
  * @property {() => Date} now
  */
@@ -418,6 +435,7 @@ const STEP_OPTIONS = {
     epic: { type: 'string' },
     discard: { type: 'boolean' },
     override: { type: 'boolean' },
+    final: { type: 'boolean' },
   },
   commit: { feature: { type: 'string' }, epic: { type: 'string' }, point: { type: 'string' }, phase: { type: 'string' } },
   merge: { feature: { type: 'string' }, epic: { type: 'string' } },
@@ -574,6 +592,7 @@ function parseStepArgs(step, args) {
  *   sleep?: (ms: number) => void,
  *   platform?: string,
  *   execPath?: string,
+ *   orcaHost?: import("./exec.js").OrcaHost,
  *   now?: () => Date,
  * }} ctx
  * @returns {number}
@@ -606,6 +625,8 @@ export function runOrca(argv, ctx) {
 
   const pluginRoot = values['plugin-root'] ? path.resolve(ctx.cwd, values['plugin-root']) : ctx.pluginRoot;
   const env = ctx.env ?? process.env;
+  const platform = ctx.platform ?? process.platform;
+  const orca = resolveOrcaExecutable(env, platform);
   /** @type {StepRun} */
   const run = {
     step,
@@ -616,8 +637,9 @@ export function runOrca(argv, ctx) {
     env,
     runner: ctx.runner ?? defaultRunner,
     sleep: ctx.sleep ?? sleepSync,
-    platform: ctx.platform ?? process.platform,
-    orca: resolveOrcaExecutable(env, ctx.platform ?? process.platform),
+    platform,
+    orca,
+    orcaHost: ctx.orcaHost ?? resolveOrcaHost(orca, env, platform),
     cli: {
       node: ctx.execPath ?? process.execPath,
       bin: path.join(pluginRoot, 'installer', 'bin', 'beast-mode.js'),
@@ -1614,7 +1636,9 @@ function stepOfStart(run, stage) {
  * review, review-fix, or inbox stage clears the feature marks, so the
  * feature steps run again after new work. A start of Phase n clears the
  * marks of Phase n too. The marks of the other phases stay, so a phase
- * step never runs twice for one phase.
+ * step never runs twice for one phase. Fix 11: a mark `overridden-final`
+ * always stays. The user accepted the step at its round cap
+ * (`step-fail-cap`), so it never runs again in this run.
  *
  * @param {unknown} marks The `done.steps` object of the record.
  * @param {string} stage
@@ -1626,6 +1650,10 @@ function keptStepMarks(marks, stage, phase) {
   const kept = {};
   for (const [key, mark] of Object.entries(isPlainObject(marks) ? marks : {})) {
     const point = key.split(':')[0];
+    if (mark === FINAL_MARK) {
+      kept[key] = mark;
+      continue;
+    }
     if (point === 'feature' || point === 'epic') continue;
     if (stage === 'phase' && phase !== null && point === `phase-${phase}`) continue;
     kept[key] = mark;
@@ -1827,6 +1855,11 @@ function startStage(run, checked, site) {
     const { [String(phaseNumber)]: _dropped, ...kept } = base.verify;
     base = { ...base, verify: kept };
   }
+  // Fix 11: a new Phase n tab starts the FAIL rounds of its phase steps again. No other start resets a count,
+  // so the rounds of a feature step survive the inbox, review, and review-fix starts that clear its mark.
+  if (stage === 'phase' && phaseNumber !== null && isPlainObject(base.stepRounds)) {
+    base = { ...base, stepRounds: Object.fromEntries(Object.entries(base.stepRounds).filter(([key]) => !key.startsWith(`phase-${phaseNumber}:`))) };
+  }
   const where = {
     stage,
     phase: phaseNumber,
@@ -1932,7 +1965,7 @@ function startStage(run, checked, site) {
       extra: { feature, stage, phase: phaseNumber, retry, count: entry.count, ...launch.fields },
     });
   }
-  return refusal(step, 'start-failed', `${Label} of ${feature} did not ${retry ? 'start on the retry' : 'start'}.`, entry.detail, {
+  return refusal(step, 'start-failed', `${Label} of ${feature} did not ${retry ? 'start on the retry' : 'start'}.${hostHint(run, entry.detail)}`, entry.detail, {
     feature,
     stage,
     phase: phaseNumber,
@@ -2194,7 +2227,8 @@ function startNewLaneByCommand(run, { checked, record, failed, retry, stage, pla
   const { agent, phase: phaseNumber, label } = plan;
   const startedAt = run.now().toISOString();
   const { inbox: _inbox, ...marks } = record?.done ?? {};
-  const base = { ...(record ?? newRecord(feature)), done: { ...marks, docs: false, steps: {} } };
+  const { stepRounds: _rounds, ...kept } = record ?? newRecord(feature);
+  const base = { ...kept, done: { ...marks, docs: false, steps: {} } };
   const Label = `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
   const count = (Number.isInteger(failed?.count) ? failed.count : failed ? 1 : 0) + 1;
   const bare = { failedStage: null, lastError: null, taskId: null, dispatchId: null, residualResources: [], nextCommands: [], recovery: null, count, circuit: false };
@@ -2464,7 +2498,8 @@ function startNewLane(run, checked, facts) {
 
   const startedAt = run.now().toISOString();
   const { inbox: _inbox, ...marks } = record?.done ?? {};
-  const base = { ...(record ?? newRecord(feature)), done: { ...marks, docs: false, steps: {} } };
+  const { stepRounds: _rounds, ...kept } = record ?? newRecord(feature);
+  const base = { ...kept, done: { ...marks, docs: false, steps: {} } };
   const result = isPlainObject(answer.result) ? answer.result : {};
   const Label = `${label.charAt(0).toUpperCase()}${label.slice(1)}`;
   const failedStart = (entry) => {
@@ -2475,7 +2510,7 @@ function startNewLane(run, checked, facts) {
       // The start changed the state of Orca, so a lost write ends the run with the facts (CR-2).
       return recordUnwritable(step, err, { started: false, dispatchId: entry.dispatchId, taskId: entry.taskId, agent, detail: entry.detail, extra: fields });
     }
-    return refusal(step, entry.code === 'worktree-unknown' ? 'worktree-unknown' : 'start-failed', `${Label} of ${feature} did not ${retry ? 'start on the retry' : 'start'}.`, entry.detail, fields);
+    return refusal(step, entry.code === 'worktree-unknown' ? 'worktree-unknown' : 'start-failed', `${Label} of ${feature} did not ${retry ? 'start on the retry' : 'start'}.${hostHint(run, entry.detail)}`, entry.detail, fields);
   };
   if (answer.kind !== 'ok' || typeof result.dispatchId !== 'string' || result.dispatchId.length === 0) {
     return failedStart(failedStartOf(answer, retry ? failed : null));
@@ -2574,23 +2609,26 @@ function startNewLane(run, checked, facts) {
 /**
  * The step result that the close of a step tab records. `PASS` when the
  * verdict file reads PASS. `overridden` for another verdict, or for no
- * verdict, when the call holds `--override`. Else a refusal, so the tab
- * and the record stay as they are. A tab of another stage records nothing.
+ * verdict, when the call holds `--override`, and `overridden-final` when it
+ * also holds `--final` (fix 11: the answer `accept` of `step-fail-cap`).
+ * Else a refusal, so the tab and the record stay as they are. A tab of
+ * another stage records nothing.
  *
  * @param {string} step
  * @param {string} run The feature path, or the epic, for the text of the refusal.
  * @param {Record<string, any> | null | undefined} active
  * @param {Record<string, import('./read.js').StepVerdictFact> | undefined} verdicts
  * @param {boolean} override
- * @returns {{ refusal: Record<string, any> | null, key: string, mark: 'PASS' | 'overridden' | null } | null}
+ * @param {boolean} [final] `--final`: the override holds for the rest of the run.
+ * @returns {{ refusal: Record<string, any> | null, key: string, mark: 'PASS' | 'overridden' | 'overridden-final' | null } | null}
  */
-function stepMarkOf(step, run, active, verdicts, override) {
+function stepMarkOf(step, run, active, verdicts, override, final = false) {
   if (!active || active.stage !== 'step') return null;
   const key = stepKey(String(active.point), Number(active.step));
   const fact = verdicts?.[key];
   const verdict = fact?.verdict ?? null;
   if (verdict === 'PASS') return { refusal: null, key, mark: 'PASS' };
-  if (override) return { refusal: null, key, mark: 'overridden' };
+  if (override) return { refusal: null, key, mark: final ? FINAL_MARK : 'overridden' };
   const read = verdict === null ? 'The verdict file is missing, or its line 1 is not PASS, FAIL, or BLOCKED.' : `The verdict file reads ${verdict}.`;
   return {
     key,
@@ -2600,6 +2638,21 @@ function stepMarkOf(step, run, active, verdicts, override) {
       'Close it with "--override" to go on, recorded as overridden.',
     ]),
   };
+}
+
+/**
+ * Fix 11: the FAIL rounds of each step after the close of a step tab. An
+ * override (`overridden` or `overridden-final`) counts one more round of
+ * its step. A PASS starts its count again: the step converged.
+ *
+ * @param {unknown} rounds The `stepRounds` object of the record.
+ * @param {{ key: string, mark: string | null }} result
+ * @returns {Record<string, number>}
+ */
+function stepRoundsAfter(rounds, result) {
+  const { [result.key]: prior, ...rest } = isPlainObject(rounds) ? rounds : {};
+  if (result.mark === 'PASS') return rest;
+  return { ...rest, [result.key]: (Number.isInteger(prior) && prior > 0 ? prior : 0) + 1 };
 }
 
 /**
@@ -2644,7 +2697,7 @@ function stepClose(run) {
   }
 
   // The close of a step tab records its result (Decision 17): PASS, or `overridden` with "--override".
-  const stepResult = discard ? null : stepMarkOf(step, feature, record.active, readFeatureDocs(run.projectRoot, checked).stepVerdicts, run.values.override === true);
+  const stepResult = discard ? null : stepMarkOf(step, feature, record.active, readFeatureDocs(run.projectRoot, checked).stepVerdicts, run.values.override === true, run.values.final === true);
   if (stepResult?.refusal) return stepResult.refusal;
 
   // A dropped verify or fix tab leaves no verdict, so the run starts a new tab for the phase (rule F16).
@@ -2657,7 +2710,7 @@ function stepClose(run) {
   for (const id of [record.active?.dispatchId, record.failedStart?.dispatchId]) {
     if (typeof id === 'string' && id.length > 0 && !ids.includes(id)) ids.push(id);
   }
-  const release = ids.map((id) => {
+  let release = ids.map((id) => {
     const answer = orcaCall(run, orcaCalls.workerRelease(id));
     if (answer.kind === 'ok') {
       const state = isPlainObject(answer.result) && typeof answer.result.state === 'string' ? answer.result.state : 'unknown';
@@ -2678,6 +2731,8 @@ function stepClose(run) {
       ...working.detail,
     ], { feature, dispatchId: working.dispatchId });
   }
+  // Fix 10: a tab that --discard drops and Orca did not release still runs. Stop it.
+  if (discard) release = stopUnreleased(run, release);
   const ownClose = closeOwnTerminal(run, record.active, release);
   const own = terminalCloseOf(ownClose);
 
@@ -2688,7 +2743,7 @@ function stepClose(run) {
     const lines = largeChangesSince(readFeatureDocs(run.projectRoot, checked), record.active.closedLarge);
     if (lines.length > 0) largeChange = { lines: lines.map((line) => line.text), at: run.now().toISOString() };
   }
-  const kept = release.filter((entry) => !entry.ok || entry.state === 'retained').map((entry) => entry.dispatchId);
+  const kept = release.filter((entry) => (!entry.ok && entry.stopped !== true) || entry.state === 'retained').map((entry) => entry.dispatchId);
   writeRecord(run.projectRoot, feature, {
     ...record,
     active: null,
@@ -2704,6 +2759,7 @@ function stepClose(run) {
     ...(docsDone ? { done: { ...record.done, docs: true } } : {}),
     ...(inboxDone ? { done: { ...record.done, inbox: true } } : {}),
     ...(stepResult?.mark ? { done: { ...record.done, steps: { ...record.done.steps, [stepResult.key]: stepResult.mark } } } : {}),
+    ...(stepResult?.mark ? { stepRounds: stepRoundsAfter(record.stepRounds, stepResult) } : {}),
   });
 
   const tab = record.active
@@ -2711,11 +2767,7 @@ function stepClose(run) {
       ? `the Phase ${record.active.phase} tab`
       : `the ${record.active.stage} tab`
     : 'the failed start';
-  const refusedRelease = release.filter((entry) => !entry.ok || entry.state === 'retained');
-  const tail =
-    refusedRelease.length > 0
-      ? ` Orca did not release ${refusedRelease.map((entry) => entry.dispatchId).join(', ')}, and the record is clear.`
-      : '';
+  const tail = releaseTail(release, discard);
   const marks = `${docsDone ? ' The docs are marked done.' : ''}${largeChange ? ' A large change wrote a new requirements.md.' : ''}${stepResult?.mark ? ` The step result is ${stepResult.mark}.` : ''}`;
   return success(step, `Closed ${tab} of ${feature}.${marks}${tail}${own.say}`, {
     feature,
@@ -3970,7 +4022,7 @@ function stepStartEpic(run) {
       extra: { epic, feature: null, stage, phase: null, retry, count: entry.count, ...launch.fields },
     });
   }
-  return refusal(step, 'start-failed', `${label.charAt(0).toUpperCase()}${label.slice(1)} of ${epic} did not ${retry ? 'start on the retry' : 'start'}.`, entry.detail, {
+  return refusal(step, 'start-failed', `${label.charAt(0).toUpperCase()}${label.slice(1)} of ${epic} did not ${retry ? 'start on the retry' : 'start'}.${hostHint(run, entry.detail)}`, entry.detail, {
     epic,
     feature: null,
     stage,
@@ -4006,6 +4058,59 @@ function releaseDispatches(run, ids) {
 }
 
 /**
+ * Fix 10: stop each tab that `close --discard` drops and Orca did not
+ * release. Orca releases only a settled worker, so it refuses the release
+ * of a tab that has not reported (`dispatch_inactive`): a stalled tab, or a
+ * tab whose turn ended on an error. That tab stays a live `dispatched`
+ * worker with an open terminal and a mailbox, so a "continue" typed into
+ * it, or its undelivered resume mail, starts it again beside the new tab of
+ * the same work, on the same tree. `worker-stop` fences the dispatch and stops its agent terminal
+ * and its helpers. A failed stop never fails the close: the say line names
+ * the tab that still runs.
+ *
+ * @param {StepRun} run
+ * @param {Record<string, any>[]} release The answers of the release.
+ * @returns {Record<string, any>[]} The same entries; a refused one carries `stopped`, and `processAction` or
+ *   `stopCode`.
+ */
+function stopUnreleased(run, release) {
+  return release.map((entry) => {
+    // Only a refusal as not settled names a live worker. A gone dispatch or an Orca that is down has none to stop.
+    if (entry.ok || entry.code !== 'dispatch_inactive') return entry;
+    const answer = orcaCall(run, orcaCalls.workerStop(entry.dispatchId));
+    if (answer.kind === 'ok') {
+      const action = isPlainObject(answer.result) && typeof answer.result.processAction === 'string' ? answer.result.processAction : 'unknown';
+      return { ...entry, stopped: true, processAction: action };
+    }
+    return { ...entry, stopped: false, stopCode: answer.code, detail: [...(entry.detail ?? []), ...(answer.detail ?? [])] };
+  });
+}
+
+/**
+ * The say tail of a close for the release answers: empty, or a space and
+ * the sentences. A tab that a discard did not stop still runs, so the tail
+ * tells the coordinator to stop it in Orca (fix 10).
+ *
+ * @param {Record<string, any>[]} release
+ * @param {boolean} discard
+ * @returns {string}
+ */
+function releaseTail(release, discard) {
+  const ids = (entries) => entries.map((entry) => entry.dispatchId).join(', ');
+  const stopped = release.filter((entry) => !entry.ok && entry.stopped === true);
+  const running = release.filter((entry) => (!entry.ok && entry.stopped !== true) || entry.state === 'retained');
+  let tail = '';
+  if (stopped.length > 0) tail += ` Orca did not release ${ids(stopped)}, so the close stopped it, and the record is clear.`;
+  if (running.length > 0) {
+    tail += ` Orca did not release ${ids(running)}, and the record is clear.`;
+    if (discard && running.some((entry) => entry.stopped === false)) {
+      tail += ' Its tab can still work: stop it in Orca before a new tab of the same work starts.';
+    }
+  }
+  return tail;
+}
+
+/**
  * Close the terminal that our own command-path start opened (fix 3). Orca
  * does not own that terminal, so a release answers `retained` or
  * `already_released` and leaves the tab. The close and the merge are the
@@ -4025,8 +4130,11 @@ function closeOwnTerminal(run, active, release) {
   const released = release.find((entry) => entry.dispatchId === active.dispatchId);
   if (!released) return null;
   // A failed release leaves the worker live, so the step closes no terminal and says the tab stays open (fix 5).
-  if (!released.ok) return { terminal, closed: false, detail: released.detail };
-  if (released.state !== 'retained' && released.state !== 'already_released') return null;
+  // Fix 10: a stop of that worker fences it. Orca does not own this terminal, so the step closes it.
+  if (!released.ok && released.stopped !== true) return { terminal, closed: false, detail: released.detail };
+  if (released.stopped === true) {
+    if (released.processAction === 'closed_agent_terminal') return null;
+  } else if (released.state !== 'retained' && released.state !== 'already_released') return null;
   const answer = orcaCall(run, orcaCalls.terminalClose(terminal));
   return answer.kind === 'ok' ? { terminal, closed: true, detail: [] } : { terminal, closed: false, detail: answer.detail };
 }
@@ -4068,9 +4176,11 @@ function stepCloseEpic(run) {
     return success(step, `No tab of ${epic} is open.`, { epic, feature: null, dispatchId: null, release: [] });
   }
   // The close of an epic step tab records its result, as the close of a feature step tab does.
-  const stepResult = discard ? null : stepMarkOf(step, epic, record.active, readEpicDocs(run.projectRoot, checked).stepVerdicts, run.values.override === true);
+  const stepResult = discard ? null : stepMarkOf(step, epic, record.active, readEpicDocs(run.projectRoot, checked).stepVerdicts, run.values.override === true, run.values.final === true);
   if (stepResult?.refusal) return stepResult.refusal;
-  const release = releaseDispatches(run, [record.active?.dispatchId, record.failedStart?.dispatchId]);
+  const released = releaseDispatches(run, [record.active?.dispatchId, record.failedStart?.dispatchId]);
+  // Fix 10: a tab that --discard drops and Orca did not release still runs. Stop it.
+  const release = discard ? stopUnreleased(run, released) : released;
   const own = terminalCloseOf(closeOwnTerminal(run, record.active, release));
   const docsDone = record.active?.stage === 'epic-docs' && !discard;
   writeEpicRecord(run.projectRoot, epic, {
@@ -4079,10 +4189,10 @@ function stepCloseEpic(run) {
     failedStart: null,
     ...(docsDone ? { done: { ...record.done, docs: true } } : {}),
     ...(stepResult?.mark ? { done: { ...record.done, steps: { ...record.done.steps, [stepResult.key]: stepResult.mark } } } : {}),
+    ...(stepResult?.mark ? { stepRounds: stepRoundsAfter(record.stepRounds, stepResult) } : {}),
   });
   const tab = record.active ? `the ${record.active.stage} tab` : 'the failed start';
-  const refused = release.filter((entry) => !entry.ok || entry.state === 'retained');
-  const tail = refused.length > 0 ? ` Orca did not release ${refused.map((entry) => entry.dispatchId).join(', ')}, and the record is clear.` : '';
+  const tail = releaseTail(release, discard);
   const marks = `${docsDone ? ' The epic docs are marked done.' : ''}${stepResult?.mark ? ` The step result is ${stepResult.mark}.` : ''}`;
   return success(step, `Closed ${tab} of ${epic}.${marks}${tail}${own.say}`, {
     epic,

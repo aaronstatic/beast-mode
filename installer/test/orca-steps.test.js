@@ -570,6 +570,96 @@ test('verdicts: a verdict file with a bad line 1 reads as no verdict', () => {
   assert.deepEqual([action.action, action.reason], ['send', 'missing-verdict']);
 });
 
+/**
+ * Fix 11: a reported feature step tab with a FAIL verdict, after `prior` FAIL rounds of the step.
+ *
+ * @param {number} prior
+ * @param {Record<string, any>} [extra] Keys of the orchestration object.
+ * @returns {Record<string, any>}
+ */
+function failedAfter(prior, extra = {}) {
+  const f = facts({
+    steps: [REVIEW_UX],
+    tasks: ALL_DONE,
+    record: { ...stepRecord(), ...(prior > 0 ? { stepRounds: { 'feature:0': prior } } : {}) },
+    worker: { state: 'done', detail: [] },
+    docs: { stepVerdicts: { 'feature:0': { verdict: 'FAIL', evidence: 'two findings' } } },
+  });
+  if (Object.keys(extra).length > 0) f.config = parseOrcaConfig(JSON.stringify(configWith([REVIEW_UX], extra)));
+  return decideFeature(f);
+}
+
+test('fix 11: below the round cap a FAIL still asks step-failed, with the same options', () => {
+  for (const prior of [0, 1]) {
+    const action = failedAfter(prior);
+    assert.deepEqual([action.action, action.reason], ['ask', 'step-failed'], `after ${prior} rounds`);
+    assert.deepEqual(action.options.map((option) => option.key), ['stop', 'go-on']);
+    assert.equal(action.recommended, 'stop');
+  }
+});
+
+test('fix 11: at the round cap a FAIL asks step-fail-cap: accept (final override, recommended), one more round, or stop', () => {
+  const action = failedAfter(2);
+  assert.deepEqual([action.action, action.reason, action.round, action.cap], ['ask', 'step-fail-cap', 3, 3]);
+  assert.deepEqual(action.options.map((option) => option.key), ['accept', 'one-more', 'stop']);
+  assert.equal(action.recommended, 'accept');
+  assert.deepEqual(action.options[0].run, ['close', '--feature', 'demo', '--override', '--final']);
+  assert.deepEqual(action.options[1].run, ['close', '--feature', 'demo', '--override']);
+  assert.equal(action.options[2].run, null);
+  assert.ok(action.question.startsWith('[demo step feature] The step "/review-ux demo" has failed 3 rounds'), action.question);
+  assert.ok(action.question.includes('did not converge'), action.question);
+  assert.deepEqual(action.detail, ['two findings']);
+  // A round past the cap (after "one more") asks the same question again.
+  assert.deepEqual([failedAfter(5).reason, failedAfter(5).round], ['step-fail-cap', 6]);
+  // A PASS at the cap still closes.
+  const pass = decideFeature(
+    facts({
+      steps: [REVIEW_UX],
+      tasks: ALL_DONE,
+      record: { ...stepRecord(), stepRounds: { 'feature:0': 5 } },
+      worker: { state: 'done', detail: [] },
+      docs: { stepVerdicts: { 'feature:0': { verdict: 'PASS', evidence: '' } } },
+    })
+  );
+  assert.equal(pass.action, 'close');
+});
+
+test('fix 11: orchestration.stepRoundCap sets the cap', () => {
+  assert.equal(failedAfter(0, { stepRoundCap: 1 }).reason, 'step-fail-cap');
+  assert.equal(failedAfter(2, { stepRoundCap: 5 }).reason, 'step-failed');
+  assert.equal(failedAfter(4, { stepRoundCap: 5 }).reason, 'step-fail-cap');
+});
+
+test('fix 11: a step accepted at its cap does not run again, also with open inbox lines', () => {
+  const inbox = { inboxActionable: [{ text: '- [ ] bug 2026-11-18 10:00 | the form drops a field' }] };
+  const record = { ...recordDone({ steps: { 'feature:0': 'overridden-final' } }), stepRounds: { 'feature:0': 3 } };
+  const next = decideFeature(facts({ steps: [REVIEW_UX], tasks: ALL_DONE, docs: inbox, record }));
+  assert.deepEqual([next.action, next.stage], ['start', 'inbox']);
+  const docs = decideFeature(facts({ steps: [REVIEW_UX], tasks: ALL_DONE, record }));
+  assert.deepEqual([docs.action, docs.stage], ['start', 'docs']);
+});
+
+test('fix 11: an epic step at its round cap asks step-fail-cap with the epic flags', () => {
+  const f = epicFacts({
+    steps: [EPIC_STEP],
+    record: {
+      ...newEpicRecord('editor'),
+      stepRounds: { 'epic:0': 2 },
+      active: {
+        stage: 'step', phase: null, step: 0, point: 'epic', stepCommand: '/review-epic editor',
+        verdictFile: '.beast-mode/briefs/editor/orca-step-epic-0.verdict.md', round: 0, agent: 'claude',
+        placement: 'current', dispatchId: 'disp-1', taskId: 'task-1', runId: 'run-1',
+        startedAt: '2026-11-18T07:10:00.000Z', sendBacks: 0, escalations: 0,
+      },
+    },
+    worker: { state: 'done', detail: [] },
+    docs: { stepVerdicts: { 'epic:0': { verdict: 'FAIL', evidence: 'x' } } },
+  });
+  const action = decideEpic(f);
+  assert.deepEqual([action.action, action.reason], ['ask', 'step-fail-cap']);
+  assert.deepEqual(action.options[0].run, ['close', '--epic', 'editor', '--override', '--final']);
+});
+
 test('verdicts: a busy step tab waits, and the failed start of a step retries with its step and phase flags', () => {
   const busy = decideFeature(facts({ steps: [PHASE_STEP], record: stepRecord({ phase: 1, point: 'phase-1', step: 0 }), worker: { state: 'busy', detail: [] } }));
   assert.equal(busy.action, 'wait');
@@ -996,6 +1086,71 @@ test('close: a phase step keeps its mark when the next phase starts, and new wor
     json = run(['start', '--feature', 'demo', '--stage', 'phase', '--phase', '2']);
     assert.equal(json.ok, true, JSON.stringify(json));
     assert.deepEqual(/** @type {any} */ (readRecord(root, 'demo').record).done.steps, { 'phase-1:0': 'PASS' });
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('fix 11: the FAIL rounds of a step survive the inbox start that clears its mark, and a final override survives it too', { skip: NO_GIT }, () => {
+  const root = makeProject();
+  try {
+    const run = (args) => orcaStep(root, args).json;
+    const read = () => /** @type {any} */ (readRecord(root, 'demo').record);
+    const inboxFile = path.join(root, 'docs', 'features', 'demo', 'inbox.md');
+    const failRound = (closeArgs) => {
+      assert.equal(run(['start', '--feature', 'demo', '--stage', 'step', '--step', '0']).ok, true);
+      writeBrief(root, 'orca-step-feature-0.verdict.md', 'FAIL\na finding');
+      const json = run(['close', '--feature', 'demo', ...closeArgs]);
+      assert.equal(json.ok, true, JSON.stringify(json));
+      return json;
+    };
+    const inboxRound = () => {
+      fs.writeFileSync(inboxFile, '# demo - Inbox\n\n## Items\n\n- [ ] bug 2026-11-18 10:00 | the findings of the step\n');
+      const json = run(['start', '--feature', 'demo', '--stage', 'inbox']);
+      assert.equal(json.ok, true, JSON.stringify(json));
+      fs.writeFileSync(inboxFile, '# demo - Inbox\n\n## Items\n\n- [x] bug 2026-11-18 10:00 | the findings of the step | done: fixed\n');
+      assert.equal(run(['close', '--feature', 'demo']).ok, true);
+    };
+
+    // Round 1 fails and goes on. The inbox start clears the mark and keeps the count.
+    failRound(['--override']);
+    assert.deepEqual([read().done.steps, read().stepRounds], [{ 'feature:0': 'overridden' }, { 'feature:0': 1 }]);
+    inboxRound();
+    assert.deepEqual([read().done.steps, read().stepRounds], [{}, { 'feature:0': 1 }]);
+    const again = run(['next', '--feature', 'demo']);
+    assert.deepEqual([again.action, again.stage, again.step], ['start', 'step', 0], 'the step runs again after new work');
+
+    // Round 2 fails, then the inbox runs, then round 3 is accepted at the cap with --final.
+    failRound(['--override']);
+    inboxRound();
+    assert.deepEqual(read().stepRounds, { 'feature:0': 2 });
+    const accepted = failRound(['--override', '--final']);
+    assert.deepEqual(accepted.stepResult, { key: 'feature:0', mark: 'overridden-final' });
+    assert.deepEqual([read().done.steps, read().stepRounds], [{ 'feature:0': 'overridden-final' }, { 'feature:0': 3 }]);
+
+    // A later inbox start keeps the final mark, so the run goes on to the docs and the step never starts again.
+    inboxRound();
+    assert.deepEqual(read().done.steps, { 'feature:0': 'overridden-final' });
+    const next = run(['next', '--feature', 'demo']);
+    assert.deepEqual([next.action, next.stage], ['start', 'docs']);
+    assert.equal(run(['start', '--feature', 'demo', '--stage', 'step', '--step', '0']).code, 'step-done');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('fix 11: a PASS starts the count of its step again, and a phase start resets only the rounds of its phase steps', { skip: NO_GIT }, () => {
+  const root = makeProject({ tasks: TWO_PHASES_ONE_DONE, config: configWith([PHASE_STEP, REVIEW_UX]) });
+  try {
+    const run = (args) => orcaStep(root, args).json;
+    const read = () => /** @type {any} */ (readRecord(root, 'demo').record);
+    writeRecord(root, 'demo', { ...newRecord('demo'), stepRounds: { 'phase-1:0': 2, 'phase-2:0': 1, 'feature:1': 2 } });
+    assert.equal(run(['start', '--feature', 'demo', '--stage', 'step', '--step', '0', '--phase', '1']).ok, true);
+    writeBrief(root, 'orca-step-phase-1-0.verdict.md', 'PASS');
+    assert.equal(run(['close', '--feature', 'demo']).ok, true);
+    assert.deepEqual(read().stepRounds, { 'phase-2:0': 1, 'feature:1': 2 });
+    assert.equal(run(['start', '--feature', 'demo', '--stage', 'phase', '--phase', '2']).ok, true);
+    assert.deepEqual(read().stepRounds, { 'feature:1': 2 });
   } finally {
     removeFixture(root);
   }

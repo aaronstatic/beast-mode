@@ -480,8 +480,11 @@ export function detect(ctx) {
   };
 }
 
+/** The unit of each whole-number setting, for the questions of `/orca-setup`. */
+const NUMBER_UNITS = { backstopSeconds: 'seconds', statusEveryMinutes: 'minutes', stepRoundCap: 'rounds' };
+
 /**
- * The whole-number settings of the orchestration object (fix 7), for the
+ * The whole-number settings of the orchestration object (fix 7, fix 11), for the
  * questions of `/orca-setup`: the default, the bounds, and the unit of each.
  *
  * @returns {Record<string, { default: number, min: number, max: number, unit: string }>}
@@ -490,7 +493,7 @@ export function numberSettings() {
   return Object.fromEntries(
     Object.entries(NUMBER_SETTINGS).map(([key, bounds]) => [
       key,
-      { default: bounds.fallback, min: bounds.min, max: bounds.max, unit: key === 'backstopSeconds' ? 'seconds' : 'minutes' },
+      { default: bounds.fallback, min: bounds.min, max: bounds.max, unit: NUMBER_UNITS[key] ?? 'minutes' },
     ])
   );
 }

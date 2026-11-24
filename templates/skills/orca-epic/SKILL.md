@@ -99,7 +99,7 @@ The script runs the epic in this order. You do not choose a feature or a stage. 
 - The phase commits only after a `PASS` verdict.
 - The `close` action that ends a phase holds the **slice block** in `show`. It has a `Verifier: Demo <PASS|FAIL|MANUAL>` line. Print `show` as written.
 
-A `start` action of the stage `step` runs one configured command in its own tab, with a verdict file. Treat it as any other `start` action. A `FAIL` or `BLOCKED` verdict gives an `ask` with the reason `step-failed`: stop (recommended), or go on (the step is recorded `overridden`). A step with `after: "epic"` runs only in this command, one time, before the epic docs.
+A `start` action of the stage `step` runs one configured command in its own tab, with a verdict file. Treat it as any other `start` action. A `FAIL` or `BLOCKED` verdict gives an `ask` with the reason `step-failed`: stop (recommended), or go on (the step is recorded `overridden`). A step with `after: "epic"` runs only in this command, one time, before the epic docs. A feature step runs again after new work, such as an inbox tab that fixes its findings, so the run counts its `FAIL` rounds. At round `orchestration.stepRoundCap` (3 by default) the ask is `step-fail-cap` instead: accept the result (recommended: the step is recorded `overridden-final` and does not run again in this run), one more round (recorded `overridden`), or stop.
 
 ---
 
@@ -173,7 +173,7 @@ Ask every question of this command in one plain chat message, then end your turn
 
 The user answers with the number. Never make a call to ask the user to choose while a tab runs. That call holds your turn open, and it can block a wake. Use the plain message for every question of this command, so no question blocks a wake.
 
-For an `ask` action, the question is `question`, and the options are the `label` of each entry in `options`. The entry whose `key` equals `recommended` goes first. The question starts with a tag that names its feature, or the epic docs tab. Keep the tag. The `reason` of the ask is one of `dirty-start`, `start-failed`, `escalation-cap`, `worker-gone`, `send-back-cap`, `verify-fail-cap`, `verify-blocked`, `verify-missing`, or `start-unknown`. Ask each one the same way. Then act on the answer:
+For an `ask` action, the question is `question`, and the options are the `label` of each entry in `options`. The entry whose `key` equals `recommended` goes first. The question starts with a tag that names its feature, or the epic docs tab. Keep the tag. The `reason` of the ask is one of `dirty-start`, `start-failed`, `escalation-cap`, `worker-gone`, `send-back-cap`, `verify-fail-cap`, `verify-blocked`, `verify-missing`, `step-failed`, `step-fail-cap`, or `start-unknown`. Ask each one the same way. Then act on the answer:
 
 - An option with a `run` line: run that line by step 4 of the loop, then call `next` by step 5.
 - An option with a null `run`: end the run. `next` asks the same question again until the cause changes.

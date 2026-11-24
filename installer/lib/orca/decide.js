@@ -121,6 +121,12 @@ export const START_FAILURE_CAP = 3;
 /** F16: the fix rounds of one phase before the run asks the user (section 10 part 1). */
 export const VERIFY_ROUND_CAP = 3;
 
+/** Fix 11: the default FAIL rounds of one step before the run asks `step-fail-cap` (`orchestration.stepRoundCap`). */
+export const STEP_ROUND_CAP = NUMBER_SETTINGS.stepRoundCap.fallback;
+
+/** Fix 11: the mark of a step that the user accepted at its round cap. A start of new work keeps it. */
+export const FINAL_MARK = 'overridden-final';
+
 /** The longest file list that the `dirty-start` question shows. */
 const MAX_QUESTION_FILES = 5;
 
@@ -754,11 +760,36 @@ function stepLinesOf(facts) {
 
 /**
  * @param {{ record: { record: Record<string, any> | null } | null | undefined }} facts
- * @returns {Record<string, unknown>} The step marks of the run record: `feature:0` is `PASS` or `overridden`.
+ * @returns {Record<string, unknown>} The step marks of the run record: `feature:0` is `PASS`, `overridden`, or `overridden-final`.
  */
 function stepMarks(facts) {
   const marks = facts.record?.record?.done?.steps;
   return marks !== null && typeof marks === 'object' ? marks : {};
+}
+
+/**
+ * Fix 11: the FAIL rounds of one step that the run record counts, before
+ * the round of the tab that reports now. The count sits beside
+ * `done.steps`, so it survives the starts that clear the step marks.
+ *
+ * @param {{ record: { record: Record<string, any> | null } | null | undefined }} facts
+ * @param {string} key A step key, for example "feature:0".
+ * @returns {number}
+ */
+function stepRoundsOf(facts, key) {
+  const rounds = facts.record?.record?.stepRounds?.[key];
+  return Number.isInteger(rounds) && rounds > 0 ? rounds : 0;
+}
+
+/**
+ * Fix 11: `orchestration.stepRoundCap`, else its default.
+ *
+ * @param {{ config: import('./read.js').OrcaConfigRead }} facts
+ * @returns {number}
+ */
+function stepRoundCapOf(facts) {
+  const cap = /** @type {any} */ (facts.config)?.orchestration?.stepRoundCap;
+  return Number.isInteger(cap) && cap >= 1 ? cap : STEP_ROUND_CAP;
 }
 
 /**
@@ -1521,6 +1552,13 @@ export const VERDICT_SEND_CAP = 1;
  * --override`, recorded `overridden`), or stop. No verdict sends the
  * verdict note once (`missing-verdict`), then asks the same question.
  *
+ * Fix 11: a start of new work clears the mark of a feature step, so the
+ * step runs again after the inbox fixes its findings, and it can fail
+ * again for ever. When this round is round `orchestration.stepRoundCap`
+ * (3 by default) or later, the ask is `step-fail-cap` instead: accept
+ * (`close --override --final`, recorded `overridden-final`, which no later
+ * start clears), one more round (`close --override`), or stop.
+ *
  * @param {FeatureFacts} facts
  * @param {Record<string, any>} active
  * @param {{ pass: boolean, open: string[], what: string, verdict?: string, evidence?: string }} check
@@ -1559,6 +1597,41 @@ function stepDoneAction(facts, active, check) {
     .filter((line) => line.trim().length > 0)
     .slice(0, MAX_DETAIL_LINES);
   const why = verdict === 'none' ? 'it reported with no verdict file' : `its verdict is ${verdict}`;
+  const key = stepKey(String(active.point), Number(active.step));
+  const round = stepRoundsOf(facts, key) + 1;
+  const cap = stepRoundCapOf(facts);
+  if (round >= cap) {
+    const rounds = countText(round, 'round');
+    return {
+      schema: SCHEMA,
+      action: 'ask',
+      reason: 'step-fail-cap',
+      say: `${capital(tab)} did not pass: ${why}. The step has failed ${rounds}.`,
+      question:
+        `[${tagOf(feature, active)}] The step "${active.stepCommand ?? 'step'}" has failed ${rounds} (${why} now), ` +
+        'and the fixes from the inbox did not converge. What now?',
+      options: [
+        {
+          key: 'accept',
+          label: `Accept the result and go on. The step is recorded as overridden after ${rounds}, and it does not run again in this run.`,
+          run: ['close', ...targetArgs(facts), '--override', '--final'],
+        },
+        {
+          key: 'one-more',
+          label: 'Go on, recorded as overridden. The step runs again after the next new work, and this question comes back if it fails.',
+          run: ['close', ...targetArgs(facts), '--override'],
+        },
+        { key: 'stop', label: 'Stop the run. The tab stays open, so you can read its evidence.', run: null },
+      ],
+      recommended: 'accept',
+      feature,
+      verdict,
+      round,
+      cap,
+      open: verdict === 'none' ? check.open : [],
+      detail: evidence,
+    };
+  }
   return {
     schema: SCHEMA,
     action: 'ask',
@@ -2536,7 +2609,8 @@ function verifyPart(facts, phase) {
 
 /**
  * The step results of the run record, one line per mark. An `overridden`
- * step comes first: the run went on past its FAIL.
+ * step comes first: the run went on past its FAIL. Fix 11: a step accepted
+ * at its round cap reads "overridden after <n> rounds".
  *
  * @param {FeatureFacts} facts
  * @param {string} [owner] A feature path that starts each line, for an epic summary.
@@ -2549,7 +2623,11 @@ function stepResultLines(facts, owner = '') {
     const point = key.slice(0, split);
     const found = lines.find((line) => line.k === Number(key.slice(split + 1)));
     const where = /^phase-\d+$/.test(point) ? `Phase ${point.slice(6)}` : point === 'feature' ? 'the feature' : point === 'epic' ? 'the epic' : point;
-    return { overridden: mark === 'overridden', text: `- ${owner ? `${owner}: ` : ''}${found ? found.command : `step ${key}`} (${where}): ${String(mark)}` };
+    const shown = mark === FINAL_MARK ? `overridden after ${countText(stepRoundsOf(facts, key), 'round')}` : String(mark);
+    return {
+      overridden: mark === 'overridden' || mark === FINAL_MARK,
+      text: `- ${owner ? `${owner}: ` : ''}${found ? found.command : `step ${key}`} (${where}): ${shown}`,
+    };
   });
   return [...rows.filter((row) => row.overridden), ...rows.filter((row) => !row.overridden)].map((row) => row.text);
 }
@@ -3600,7 +3678,7 @@ function epicResultLines(facts) {
       .filter((row) => row.part !== '')
       .map((row) => `- ${owner} Phase ${row.phase.number}${row.part.replace(/^, /, ': ')}`)
   );
-  const overridden = steps.filter((line) => line.endsWith(': overridden'));
+  const overridden = steps.filter((line) => /: overridden(?: after \d+ rounds?)?$/.test(line));
   return [
     ...(steps.length > 0 ? ['', 'Steps:', ...overridden, ...steps.filter((line) => !overridden.includes(line))] : []),
     ...(verify.length > 0 ? ['', 'Verify:', ...verify] : []),

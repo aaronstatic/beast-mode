@@ -37,6 +37,7 @@ import {
   parseWorktreeList,
   readEpicRecord,
   readRecord,
+  writeEpicRecord,
 } from '../lib/orca/read.js';
 import { docsSpec, epicDocsSpec, phaseSpec } from '../lib/orca/spec.js';
 import { runLine, runOrca } from '../lib/orca/steps.js';
@@ -735,6 +736,21 @@ test('epic decide E12: the summary lists the step results with overridden first,
   assert.deepEqual(lines.slice(verify, verify + 2), ['Verify:', '- editor/base Phase 1: verified PASS after 1 fix round']);
 });
 
+test('epic decide E12: a lane step accepted at its round cap reads "overridden after <n> rounds", first in the Steps block (fix 11)', () => {
+  const config = parseOrcaConfig(
+    '{"version":1,"orchestration":{"stages":{"review":false},"steps":[{"after":"feature","command":"/audit","agent":"dsh"},{"after":"epic","command":"/ship-check","agent":"dsh"}]}}'
+  );
+  const base = mergedEntry('base');
+  base.record = { record: { ...newRecord('editor/base'), done: { docs: true, steps: { 'feature:0': 'PASS' } } }, note: null };
+  const ux = mergedEntry('ux');
+  ux.record = { record: { ...newRecord('editor/ux'), done: { docs: true, steps: { 'feature:0': 'overridden-final' } }, stepRounds: { 'feature:0': 4 } }, note: null };
+  const done = { record: { ...newEpicRecord('editor'), done: { docs: true, steps: { 'epic:1': 'PASS' } } }, note: null };
+  const action = assertAction(decideEpic(epicFacts({ config, features: [base, ux], record: done })), 'done');
+  const lines = action.show.split('\n');
+  const at = lines.indexOf('Steps:');
+  assert.deepEqual(lines.slice(at, at + 4), ['Steps:', '- editor/ux: /audit (the feature): overridden after 4 rounds', '- editor/base: /audit (the feature): PASS', '- editor: /ship-check (the epic): PASS']);
+});
+
 test('epic decide stops: a dirty switch, a failed switch, a failed feature-end commit, and a failed merge stop until a fresh call', () => {
   const fresh = { flags: { fresh: true }, orcaStatus: RUNNING_STATUS };
   assertStop(decideEpic(epicFacts({ git: { dirty: ['notes.txt'] } })), 'dirty-tree');
@@ -861,6 +877,27 @@ test('epic steps: an epic record of another schema stops next, and start and clo
       assert.deepEqual([json.ok, json.code, json.epic], [false, 'record-unreadable', 'editor'], args.join(' '));
     }
     assert.equal(fs.readFileSync(file, 'utf8'), body, 'no step replaces a record that it cannot read');
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('close --epic --discard stops an epic tab that Orca did not release as not settled (fix 10)', () => {
+  const root = makeEpicProject();
+  try {
+    writeEpicRecord(root, 'editor', { ...newEpicRecord('editor'), active: activeEntry({ stage: 'epic-docs', phase: null, dispatchId: 'disp-9' }) });
+    const fake = fakeRunner({
+      'worker-release': refused('dispatch_inactive', 'Dispatch disp-9 is ready; only a settled worker can release.'),
+      'worker-stop': envelope({ dispatchId: 'disp-9', state: 'stopped', processAction: 'closed_agent_terminal' }),
+    });
+    const json = orcaStep(root, ['close', '--epic', 'editor', '--discard'], fake.runner);
+    assert.deepEqual(fake.orca(), [
+      ['orchestration', 'worker-release', '--dispatch', 'disp-9', '--json'],
+      ['orchestration', 'worker-stop', '--dispatch', 'disp-9', '--json'],
+    ]);
+    assert.deepEqual([json.ok, json.docsDone], [true, false]);
+    assert.equal(json.say, 'Closed the epic-docs tab of editor. Orca did not release disp-9, so the close stopped it, and the record is clear.');
+    assert.equal(readEpicRecord(root, 'editor').record.active, null);
   } finally {
     removeFixture(root);
   }

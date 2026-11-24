@@ -54,6 +54,7 @@ const MAX_FEATURE_PATH = 200;
  * @property {unknown[]} steps
  * @property {number} backstopSeconds The backstop timer of every wait, in seconds (fix 7).
  * @property {number} statusEveryMinutes The most often the coordinator posts a "still working" line, in minutes (fix 7).
+ * @property {number} stepRoundCap The FAIL rounds of one feature or epic step before the run asks `step-fail-cap` (fix 11).
  */
 
 /**
@@ -103,17 +104,20 @@ function invalid(code, at) {
 export const STAGE_KEYS = ['plan', 'implement', 'verify', 'review', 'docs'];
 
 /** The keys of the `orchestration` object that this version takes. */
-export const ORCHESTRATION_KEYS = ['stages', 'commit', 'concurrent', 'steps', 'backstopSeconds', 'statusEveryMinutes'];
+export const ORCHESTRATION_KEYS = ['stages', 'commit', 'concurrent', 'steps', 'backstopSeconds', 'statusEveryMinutes', 'stepRoundCap'];
 
 /**
  * Fix 7: the bounds and the default of each whole-number setting of the
  * orchestration object. `backstopSeconds` is the backstop timer of a wait on
  * a dsh tab. `statusEveryMinutes` is the most often the coordinator posts a
- * "still working" line on a timer wake that changed nothing.
+ * "still working" line on a timer wake that changed nothing. Fix 11:
+ * `stepRoundCap` is the FAIL rounds of one step before the run asks
+ * `step-fail-cap` instead of `step-failed`.
  */
 export const NUMBER_SETTINGS = {
   backstopSeconds: { min: 60, max: 86400, fallback: 600, code: 'backstop-value' },
   statusEveryMinutes: { min: 1, max: 1440, fallback: 30, code: 'status-every-value' },
+  stepRoundCap: { min: 1, max: 20, fallback: 3, code: 'step-round-cap-value' },
 };
 
 /**
@@ -370,7 +374,8 @@ function checkOrchestration(raw, problem) {
  * `step-not-object`, `step-unknown-key`, `step-after`, `step-command`,
  * `step-token`, `step-agent`), `backstop-value` (a whole number of seconds,
  * 60 to 86400), `status-every-value` (a whole number of minutes, 1 to
- * 1440), and `orchestration-unknown-key`. The reader stops at
+ * 1440), `step-round-cap-value` (a whole number of rounds, 1 to 20), and
+ * `orchestration-unknown-key`. The reader stops at
  * 20 problems. An unknown top-level key stays in the parsed file. A file
  * with no `orchestration` key is valid, and its resolved object is null.
  * Never throws.
@@ -447,6 +452,9 @@ export function resolveOrchestration(raw) {
     statusEveryMinutes: inBounds(source.statusEveryMinutes, NUMBER_SETTINGS.statusEveryMinutes)
       ? source.statusEveryMinutes
       : NUMBER_SETTINGS.statusEveryMinutes.fallback,
+    stepRoundCap: inBounds(source.stepRoundCap, NUMBER_SETTINGS.stepRoundCap)
+      ? source.stepRoundCap
+      : NUMBER_SETTINGS.stepRoundCap.fallback,
   };
 }
 
@@ -1387,6 +1395,26 @@ function readVerify(value) {
 }
 
 /**
+ * Normalize the `stepRounds` entry of a record (fix 11): the FAIL rounds of
+ * each step, `{ "<point>:<k>": n }`, with `<point>` `phase-<n>`, `feature`,
+ * or `epic`. It sits beside `done.steps`, not in it, so a start that clears
+ * the step marks keeps the count. An entry with no whole count over 0 drops.
+ *
+ * @param {Record<string, unknown>} value
+ * @returns {Record<string, number>}
+ */
+function readStepRounds(value) {
+  /** @type {Record<string, number>} */
+  const out = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (!/^(?:phase-(?:0|[1-9]\d{0,5})|feature|epic):(?:0|[1-9]\d{0,5})$/.test(key)) continue;
+    const rounds = count(entry, 0);
+    if (rounds > 0) out[key] = rounds;
+  }
+  return out;
+}
+
+/**
  * Parse the text of a run record. Null when the text does not parse: not
  * JSON, not an object, another schema, or an `active` entry with no stage
  * or no dispatch. Unknown keys stay, so a later writer keeps them. Never
@@ -1416,6 +1444,7 @@ export function parseRecord(body, featurePath, key = 'feature') {
     failedStart: readFailedStart(value.failedStart),
     largeChange: readLargeChange(value.largeChange),
     ...(isPlainObject(value.verify) ? { verify: readVerify(value.verify) } : {}),
+    ...(isPlainObject(value.stepRounds) ? { stepRounds: readStepRounds(value.stepRounds) } : {}),
     done: {
       ...done,
       docs: done.docs === true,

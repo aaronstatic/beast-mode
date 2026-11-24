@@ -21,6 +21,7 @@ Three commands make up the feature:
 3. **Git.** The script creates one branch per run and commits on it.
 4. **Node 20 or later.** The script is part of the `beast-mode` installer CLI (`beast-mode orca`).
 5. **Beast Mode in the project, for each harness that a tab uses.** Each worker tab needs the Beast Mode files of its harness. `/orca-setup` offers only the agents that are installed and on `PATH`.
+6. **On WSL2, the Orca host.** `beast-mode orca` reads the first 8 KiB of the Orca launcher (`ORCA_CLI_COMMAND`, else `orca-ide` or `orca` on `PATH`) and finds where the Orca CLI runs. A Windows launcher (it runs `orca.exe` or calls `wslpath -w`, or it is in `wsl-managed-cli`) gets the spec path in Windows form: `\\wsl.localhost\<distro>\...`. A Linux launcher (a binary, or a script that runs `node` on `out/cli/index.js` at a Linux path) gets the Linux path as it is. An unknown launcher gets the Windows form. If a start fails because Orca could not read the spec path, the step says so and names `ORCA_CLI_COMMAND`. It never retries the start by itself. Set `BEAST_MODE_ORCA_HOST=linux` or `windows` to override the probe.
 
 ---
 
@@ -47,6 +48,7 @@ Commit `.beast-mode/orca.json`, so the team shares the settings.
     "concurrent": true,
     "backstopSeconds": 600,
     "statusEveryMinutes": 30,
+    "stepRoundCap": 3,
     "steps": [
       { "after": "feature", "command": "/review-ux {feature}", "agent": "claude" }
     ]
@@ -72,6 +74,7 @@ Commit `.beast-mode/orca.json`, so the team shares the settings.
 | `steps[i].agent` | `"claude"` or `"dsh"` | none | `step-agent` |
 | `backstopSeconds` | a whole number of seconds, 60 to 86400: the backstop timer of every wait | `600` | `backstop-value` |
 | `statusEveryMinutes` | a whole number of minutes, 1 to 1440: the most often a quiet timer check posts a "still working" line | `30` | `status-every-value` |
+| `stepRoundCap` | a whole number of rounds, 1 to 20: the `FAIL` rounds of one step before the run asks `step-fail-cap` | `3` | `step-round-cap-value` |
 | any other key in `orchestration` | refused | none | `orchestration-unknown-key` |
 
 - `verify` and `docs` follow `implement` when the file names no value. A changed build agent therefore opens no surprise verify tab.
@@ -190,7 +193,8 @@ Example: `{ "after": "feature", "command": "/review-ux {feature}", "agent": "cla
 
 - A phase step runs after the verify gate and before the phase commit. A feature step runs after the review commit and before the inbox. An epic step runs after the last lane merge and before the epic docs tab. A step with `after: "epic"` runs only in `/orca-epic`.
 - The tab writes a verdict file. A `PASS` verdict closes the step. A `FAIL` or a `BLOCKED` verdict asks you: stop, or go on (the step is recorded `overridden`).
-- A step that has run is not run again. A start of new work for a phase clears the step marks of that phase, so its steps run again.
+- A step that has run is not run again. A start of new work for a phase clears the step marks of that phase, so its steps run again. A start of a phase, review, review-fix, or inbox tab clears the feature step marks, so a feature step runs again after new work, such as an inbox tab that fixes its findings.
+- The run record counts the `FAIL` rounds of each step (`stepRounds`, beside the marks). The count survives the starts that clear the marks. A `PASS` starts it again, and a new Phase n tab starts it again for the steps of Phase n. When a step fails its `stepRoundCap`th round (3 by default), the run asks `step-fail-cap` instead: accept the result (recommended: the step is recorded `overridden-final`, no later start clears it, and the run goes on to the inbox, the docs, and the commit), one more round (recorded `overridden`, so the step runs again after the next new work and the question comes back if it fails), or stop.
 - `/orca-setup` suggests steps from the current lines, the project skills, the lines that you added to an edited autorun skill, and the Beast Mode review commands.
 
 ---
@@ -209,6 +213,7 @@ The `agents` object of `.beast-mode/orca.json` belongs to the launch settings of
 - A failed start leaves its terminal open. Close it in Orca.
 - Each first start gives the Orca Task a short title (`--task-title`), and Orca shows it as the tab title, for example `nebula-light: Phase 2 implement`, `nebula-light: review fixes`, or `map-view: epic docs`. The feature name comes first, so the tabs of one run sort together, and the title has at most 60 characters. Orca opens the worker tab of the agent path with the fixed title `worker-<taskId>`, and that title protects the tab from the Task title. So after every good start that has a terminal handle, the step runs `terminal rename` with the same title, and the result holds `tabTitled: true` or `false`. A failed rename never fails the start. On the command path, the rename runs after the Enter loop of a dsh tab, so it never delays the prompt. A retry opens a new tab, and the step renames it too. A start with no terminal handle runs no rename. The rename does not change the agent status of the worker.
 - Orca does not own a terminal that the project command opened, so it leaves the tab open after `worker-release`. The `close` step (and the `merge` step of a lane) closes that terminal with `terminal close --terminal <handle>`, only when the run record shows that the start opened it. A start, a retry, and an agent-path tab never close a terminal. When the close fails, or when Orca refuses to release the dispatch (the worker can still run), the step stays good, closes no terminal, names the tab, and says that the tab stays open for you to close in Orca.
+- Orca releases only a settled worker. A tab that `close --discard` drops before it reported (a stalled tab, or a tab whose turn ended on an error) gets the refusal `dispatch_inactive`, and before fix 10 it stayed a live worker with an open terminal and a mailbox: a "continue" typed into it, or its old resume mail, started it again beside the new tab of the same work, on the same tree. So `close --discard` now runs `orchestration worker-stop --dispatch <id>` for each dispatch that Orca refused as not settled. The stop fences the dispatch and stops its agent terminal and its helpers, and the step closes an own terminal that Orca does not close. A plain `close` never stops a tab, and a gone dispatch gets no stop. A failed stop never fails the close: the say line ends "Its tab can still work: stop it in Orca before a new tab of the same work starts."
 
 A dsh tab refuses Enter until its session opens, and it keeps the prompt as a draft. Orca presses Enter only one time. So after each good start of a dsh tab, with or without a project command, `start` reads the tab and presses Enter every 2 seconds until the turn starts. It stops after 45 seconds, and it presses nothing while the tab waits on a person. A Claude Code tab gets no extra Enter. The start result names `submit`: `confirmed` or `unconfirmed`. `unconfirmed` is not a fault. When the prompt is still a draft in the tab, press Enter there yourself.
 
@@ -227,7 +232,7 @@ Every step prints one JSON object with `"schema": 1` and nothing else. Every dec
 | `next` | Reads the docs, git, the run record, and the Orca state. Prints the next action. Writes nothing |
 | `branch` | Creates or switches to the run branch, and writes the config keys |
 | `start` | Writes the spec of a stage and starts its tab |
-| `close` | Releases a tab and records its end |
+| `close` | Releases a tab and records its end. `--discard` stops a tab that Orca did not release as not settled (fix 10) |
 | `commit` | Stages and commits by the cadence |
 | `merge` | Merges a lane into the epic branch and removes its worktree |
 | `send` | Sends a worker a message: open tasks, a resume, a report request, or a missing verdict |
@@ -260,7 +265,7 @@ A step refuses with `"ok": false` and a `code`. These refusals guard the tab and
 
 ### The run summary
 
-The `done` action prints the summary. Each phase line ends with the verify result, for example `verified PASS after 2 fix rounds`. A `Steps:` block lists the result of each custom step, and a step recorded `overridden` comes first. The epic summary holds the same `Steps:` block, and a `Verify:` block with one line for each phase.
+The `done` action prints the summary. Each phase line ends with the verify result, for example `verified PASS after 2 fix rounds`. A `Steps:` block lists the result of each custom step, and a step recorded `overridden` comes first. A step accepted at its round cap reads `overridden after <n> rounds`. The epic summary holds the same `Steps:` block, and a `Verify:` block with one line for each phase.
 
 ### Your messages during a run
 

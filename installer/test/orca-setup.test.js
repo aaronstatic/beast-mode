@@ -436,6 +436,7 @@ test('step detect: one JSON object, one Orca call, no git call, and no file writ
     assert.deepEqual(json.numberSettings, {
       backstopSeconds: { default: 600, min: 60, max: 86400, unit: 'seconds' },
       statusEveryMinutes: { default: 30, min: 1, max: 1440, unit: 'minutes' },
+      stepRoundCap: { default: 3, min: 1, max: 20, unit: 'rounds' },
     });
     assert.deepEqual(fake.calls, [{ command: FAKE_ORCA, args: ['status', '--json'] }]);
     assert.deepEqual(snapshotTree(root), before);

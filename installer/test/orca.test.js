@@ -343,6 +343,7 @@ test('config: the defaults fill every key, and verify and docs follow implement'
     steps: [],
     backstopSeconds: 600,
     statusEveryMinutes: 30,
+    stepRoundCap: 3,
   });
 
   const claude = parseOrcaConfig('{"version":1,"orchestration":{"stages":{"implement":"claude"}}}');
@@ -371,6 +372,7 @@ test('config: the defaults fill every key, and verify and docs follow implement'
     steps: [],
     backstopSeconds: 600,
     statusEveryMinutes: 30,
+    stepRoundCap: 3,
   });
 });
 
@@ -1025,6 +1027,48 @@ test('decide F23: the summary lists each step result with overridden first, and 
   assert.ok(lines.includes('- Phase 2 - Slice 2: committed as "feat: demo phase 2", verified PASS after 2 fix rounds'), action.show);
   const at = lines.indexOf('Steps:');
   assert.deepEqual(lines.slice(at, at + 4), ['Steps:', '- /check {phase} (Phase 2): overridden', '- /check {phase} (Phase 1): PASS', '- /audit (the feature): PASS']);
+});
+
+test('config: stepRoundCap defaults to 3, parses a whole number from 1 to 20, and refuses a bad value (fix 11)', () => {
+  assert.equal(parseOrcaConfig('{"version":1,"orchestration":{}}').orchestration.stepRoundCap, 3);
+  assert.equal(parseOrcaConfig('{"version":1,"orchestration":{"stepRoundCap":5}}').orchestration.stepRoundCap, 5);
+  assert.deepEqual(
+    [1, 20].map((n) => parseOrcaConfig(`{"version":1,"orchestration":{"stepRoundCap":${n}}}`).orchestration.stepRoundCap),
+    [1, 20]
+  );
+  for (const value of ['0', '21', '2.5', '"3"', 'null', '-1']) {
+    const read = parseOrcaConfig(`{"version":1,"orchestration":{"stepRoundCap":${value}}}`);
+    assert.equal(read.state, 'invalid', value);
+    assert.deepEqual(read.problems, [{ code: 'step-round-cap-value', at: '$.orchestration.stepRoundCap' }], value);
+  }
+});
+
+test('decide F23: a step accepted at its round cap reads "overridden after <n> rounds", first in the Steps block (fix 11)', () => {
+  const config = parseOrcaConfig(
+    '{"version":1,"orchestration":{"stages":{"review":false},"steps":[{"after":"phase","command":"/check {phase}","agent":"dsh"},{"after":"feature","command":"/audit","agent":"dsh"}]}}'
+  );
+  const tasks = parseTasks(tasksDoc(phaseText(1, { done: 1 })));
+  const action = assertAction(
+    decideFeature(
+      facts({
+        config,
+        docs: { tasks, phaseVerdicts: { 1: { verdict: 'PASS', evidence: '', demo: null } } },
+        git: { subjects: ['feat: demo phase 1'] },
+        record: recordWith(
+          {},
+          {
+            active: null,
+            done: { docs: true, steps: { 'phase-1:0': 'PASS', 'feature:1': 'overridden-final' } },
+            stepRounds: { 'feature:1': 3 },
+          }
+        ),
+      })
+    ),
+    'done'
+  );
+  const lines = action.show.split('\n');
+  const at = lines.indexOf('Steps:');
+  assert.deepEqual(lines.slice(at, at + 3), ['Steps:', '- /audit (the feature): overridden after 3 rounds', '- /check {phase} (Phase 1): PASS']);
 });
 
 test('decide F7a: an unreadable record stops record-unreadable before F8, and an earlier stop keeps the note in say', () => {
@@ -3578,11 +3622,13 @@ test('close: a follow-up that a note started is kept while it works, and --disca
     assert.equal(json.ok, true, JSON.stringify(json));
     assert.equal(readRecord(root, 'demo').record.active, null);
 
-    // --discard drops a follow-up that still works, as before.
+    // --discard drops a follow-up that still works, and stops it (fix 10).
     writeRecord(root, 'demo', recordWith(followUp).record);
     fake.answers['worker-release'] = notSettled;
+    fake.answers['worker-stop'] = envelope({ dispatchId: 'disp-f', state: 'stopped', processAction: 'closed_agent_terminal' });
     json = step(['close', '--feature', 'demo', '--discard']);
     assert.deepEqual([json.ok, json.discard], [true, true]);
+    assert.deepEqual(fake.orca().at(-1), ['orchestration', 'worker-stop', '--dispatch', 'disp-f', '--json']);
     assert.equal(readRecord(root, 'demo').record.active, null);
 
     // A tab that no note followed up keeps the old rule: a refused release never blocks the clear.
@@ -3590,6 +3636,98 @@ test('close: a follow-up that a note started is kept while it works, and --disca
     json = step(['close', '--feature', 'demo']);
     assert.equal(json.ok, true);
     assert.equal(readRecord(root, 'demo').record.active, null);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('close: --discard stops a tab that Orca did not release as not settled, and a failed stop says the tab still runs (fix 10)', () => {
+  const root = makeProject();
+  try {
+    const notSettled = {
+      status: 1,
+      signal: null,
+      stdout: `${JSON.stringify({ ok: false, error: { code: 'dispatch_inactive', message: 'Dispatch disp-1 is ready; only a settled worker can release. Use worker-stop to cancel an active worker.' } })}\n`,
+      stderr: '',
+      error: null,
+    };
+    const fake = fakeRunner({
+      'worker-release': notSettled,
+      'worker-stop': envelope({ dispatchId: 'disp-1', state: 'stopped', processAction: 'closed_agent_terminal' }),
+    });
+    const step = (args) => orcaStep(root, args, { runner: fake.runner }).json;
+
+    // A plain close never stops a tab: only --discard drops one that has not reported.
+    writeRecord(root, 'demo', recordWith().record);
+    let json = step(['close', '--feature', 'demo']);
+    assert.equal(json.ok, true);
+    assert.equal(fake.orca().filter((args) => args[1] === 'worker-stop').length, 0, 'a plain close stops nothing');
+    assert.match(json.say, /Orca did not release disp-1, and the record is clear\.$/);
+
+    // The stalled tab of the incident: --discard releases first, and the refusal as not settled stops it.
+    writeRecord(root, 'demo', recordWith().record);
+    let before = fake.orca().length;
+    json = step(['close', '--feature', 'demo', '--discard']);
+    assert.deepEqual(fake.orca().slice(before), [
+      ['orchestration', 'worker-release', '--dispatch', 'disp-1', '--json'],
+      ['orchestration', 'worker-stop', '--dispatch', 'disp-1', '--json'],
+    ]);
+    assert.equal(json.ok, true);
+    assert.deepEqual(json.release.map((entry) => [entry.dispatchId, entry.code, entry.stopped, entry.processAction]), [
+      ['disp-1', 'dispatch_inactive', true, 'closed_agent_terminal'],
+    ]);
+    assert.equal(json.say, 'Closed the Phase 1 tab of demo. Orca did not release disp-1, so the close stopped it, and the record is clear.');
+    assert.equal(readRecord(root, 'demo').record.active, null);
+
+    // A failed stop never blocks the clear, and the say line tells the coordinator that the tab can still work.
+    fake.answers['worker-stop'] = {
+      status: 1,
+      signal: null,
+      stdout: `${JSON.stringify({ ok: false, error: { code: 'stop_unknown', message: 'The agent exit was not proven.' } })}\n`,
+      stderr: '',
+      error: null,
+    };
+    writeRecord(root, 'demo', recordWith().record);
+    json = step(['close', '--feature', 'demo', '--discard']);
+    assert.equal(json.ok, true);
+    assert.deepEqual([json.release[0].stopped, json.release[0].stopCode], [false, 'stop_unknown']);
+    assert.ok(json.say.endsWith(' Orca did not release disp-1, and the record is clear. Its tab can still work: stop it in Orca before a new tab of the same work starts.'), json.say);
+    assert.equal(readRecord(root, 'demo').record.active, null);
+
+    // A gone dispatch has no worker to stop: no stop call, and no "still work" line.
+    fake.answers['worker-release'] = NOT_FOUND;
+    writeRecord(root, 'demo', recordWith().record);
+    before = fake.orca().length;
+    json = step(['close', '--feature', 'demo', '--discard']);
+    assert.deepEqual(fake.orca().slice(before), [['orchestration', 'worker-release', '--dispatch', 'disp-1', '--json']]);
+    assert.doesNotMatch(json.say, /can still work/);
+  } finally {
+    removeFixture(root);
+  }
+});
+
+test('close: --discard of an own-terminal tab that a stop fenced closes the terminal that Orca does not own (fix 10)', () => {
+  const root = makeProject();
+  try {
+    writeRecord(root, 'demo', recordWith({ terminal: 'term-7', ownTerminal: true }).record);
+    const fake = fakeRunner({
+      'worker-release': {
+        status: 1,
+        signal: null,
+        stdout: `${JSON.stringify({ ok: false, error: { code: 'dispatch_inactive', message: 'only a settled worker can release.' } })}\n`,
+        stderr: '',
+        error: null,
+      },
+      'worker-stop': envelope({ dispatchId: 'disp-1', state: 'stopped', processAction: 'none' }),
+      terminal: envelope({ handle: 'term-7', closed: true }),
+    });
+    const json = orcaStep(root, ['close', '--feature', 'demo', '--discard'], { runner: fake.runner }).json;
+    assert.deepEqual(fake.orca(), [
+      ['orchestration', 'worker-release', '--dispatch', 'disp-1', '--json'],
+      ['orchestration', 'worker-stop', '--dispatch', 'disp-1', '--json'],
+      ['terminal', 'close', '--terminal', 'term-7', '--json'],
+    ]);
+    assert.deepEqual([json.ok, json.terminalClosed], [true, true]);
   } finally {
     removeFixture(root);
   }
@@ -6673,4 +6811,51 @@ test('fix 9: both coordinator skills act on the question action, and answer it w
     // The quiet check of a timer wake (fix 7) still shows a question.
     assert.ok(skill.includes('or it gives `stop`, `ask`, `question`, or a failed command'), name);
   }
+});
+
+test('fix 7 (WSL): the host of the Orca CLI decides the spec path form, and a wrong guess adds one say sentence with no retry', () => {
+  /** @param {'linux' | 'windows'} host @param {string} stderr */
+  const startOn = (host, stderr) => {
+    const root = makeProject();
+    try {
+      gitIn(root, ['switch', '-q', '-c', 'feat/demo']);
+      const answer = { status: 1, signal: null, stdout: '', stderr, error: null };
+      const fake = fakeRunner({ 'worker-start': answer, 'worker-release': envelope({ state: 'released' }) });
+      let out = '';
+      const stdout = /** @type {any} */ ({ write: (chunk) => ((out += chunk), true) });
+      runOrca(['start', '--feature', 'demo', '--stage', 'phase', '--phase', '1', '--project', root], {
+        stdout,
+        cwd: root,
+        pluginRoot: PLUGIN_ROOT,
+        env: testEnv({ WSL_DISTRO_NAME: 'Ubuntu' }),
+        runner: fake.runner,
+        sleep: () => {},
+        platform: 'linux',
+        execPath: NODE,
+        now: () => NOW,
+        orcaHost: host,
+      });
+      const starts = fake.orca().filter((args) => args[1] === 'worker-start');
+      return { starts, json: JSON.parse(out.trim()), root };
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  };
+  const specOf = (args) => args[args.indexOf('--spec-file') + 1];
+
+  const linux = startOn('linux', 'error: invalid_argument: Could not read C:\\home\\u\\p\\orca-phase-1.md: ENOENT\n');
+  assert.equal(linux.starts.length, 1, 'no automatic retry');
+  assert.ok(specOf(linux.starts[0]).startsWith('/'), 'a linux host keeps the Linux spec path');
+  assert.match(linux.json.say, /ORCA_CLI_COMMAND/);
+  assert.match(linux.json.say, /detected host: linux/);
+
+  const windows = startOn('windows', 'error: start_failed: boom\n');
+  assert.equal(windows.starts.length, 1);
+  assert.ok(specOf(windows.starts[0]).startsWith('\\\\wsl.localhost\\Ubuntu\\'), 'a windows host converts');
+  assert.doesNotMatch(windows.json.say, /ORCA_CLI_COMMAND/, 'another fault adds no host sentence');
+
+  const guess = startOn('windows', 'error: invalid_argument: Could not read /w/\\\\wsl.localhost\\Ubuntu\\x.md: ENOENT\n');
+  assert.equal(guess.starts.length, 1);
+  assert.match(guess.json.say, /runs on linux/);
+  assert.match(guess.json.say, /detected host: windows/);
 });
